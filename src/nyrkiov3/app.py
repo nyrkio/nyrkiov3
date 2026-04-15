@@ -1,5 +1,7 @@
 """Nyrkiö v3 app: ingest + read endpoints, benchzoo-shaped payload,
 FerretDB-compatible store interface. Schemas in SCHEMAS are authoritative."""
+from __future__ import annotations
+
 import datetime
 import logging
 import os
@@ -9,8 +11,14 @@ from purejson import Document, Collection
 from extjson import ObjectId, dumps, utcnow, parse_date, to_utc, UTC
 from jsonee import JsonEE, Request, Response, HTTPError, InMemoryStore
 
+from . import auth as _auth
+
 
 LOG = logging.getLogger("nyrkiov3.app")
+
+
+SESSION_COOKIE = "nyrkio_session"
+OAUTH_STATE_COOKIE = "nyrkio_oauth_state"
 
 
 # Snapshot config defaults. Overridable via build_app(store=…) when a
@@ -90,6 +98,31 @@ SCHEMAS = {
 }
 
 
+def _parse_cookies(headers):
+    raw = (headers or {}).get("cookie", "") or ""
+    out = {}
+    for chunk in raw.split(";"):
+        if "=" not in chunk:
+            continue
+        k, v = chunk.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def _current_user(request, store, secret):
+    """Return the user document for this request, or None."""
+    cookies = _parse_cookies(request.get("headers") or {})
+    cookie = cookies.get(SESSION_COOKIE)
+    if not cookie or not secret:
+        return None
+    try:
+        payload = _auth.verify_session(cookie, secret)
+    except _auth.AuthError:
+        return None
+    users = store.collection("users")
+    return users.find_one({"github_id": payload.get("github_id")})
+
+
 def build_app(store=None, recent_cp_days=14, snapshot_path=None,
               snapshot_interval_s=DEFAULT_SNAPSHOT_INTERVAL_S):
     """Build the v0 nyrkio app.
@@ -126,9 +159,245 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
     # do have CPs.
     app.config = {"recent_cp_days": recent_cp_days}
 
+    # Auth / OAuth configuration. These are populated by the caller
+    # (demo_server, production wiring) before serving requests; missing
+    # values cause the OAuth endpoints to 503 politely so local dev
+    # without a registered GitHub App still works.
+    # Public-facing base URL Nyrkiö is served from. Hardcoded so we
+    # can register the OAuth callback and webhook URLs with GitHub once
+    # and forget. For local dev override with NYRKIO_BASE_URL.
+    app.auth_config = {
+        "client_id": os.environ.get("NYRKIO_GITHUB_CLIENT_ID", ""),
+        "client_secret": os.environ.get("NYRKIO_GITHUB_CLIENT_SECRET", ""),
+        "session_secret": os.environ.get("NYRKIO_SESSION_SECRET", ""),
+        "base_url": os.environ.get("NYRKIO_BASE_URL", "https://nyrkio.com"),
+    }
+
     @app.route("GET", "/api/v3/config")
     def get_config(request: Request):
-        return Document(app.config)
+        # Expose which auth flows are configured so the landing page
+        # can grey out the "Sign in" button when we have no client_id.
+        cfg = dict(app.config)
+        cfg["auth_enabled"] = bool(
+            app.auth_config["client_id"] and app.auth_config["session_secret"])
+        return Document(cfg)
+
+    # ------ auth: /login, /oauth/callback, /logout, /api/v3/me ---------
+
+    def _require_auth():
+        ac = app.auth_config
+        if not ac["client_id"] or not ac["client_secret"] or not ac["session_secret"]:
+            raise HTTPError(503, "oauth not configured on this instance")
+
+    @app.route("GET", "/login")
+    def login(request: Request):
+        _require_auth()
+        state = _auth.new_state()
+        base = app.auth_config["base_url"] or ""
+        redirect_uri = f"{base}/oauth/callback"
+        url = _auth.authorize_url(
+            app.auth_config["client_id"], redirect_uri, state)
+        # Stash state in a short-lived cookie so the callback can verify.
+        return Response(
+            body=None, status=302,
+            headers={
+                "location": url,
+                "set-cookie": f"{OAUTH_STATE_COOKIE}={state}; Path=/; HttpOnly; Max-Age=600; SameSite=Lax",
+            },
+        )
+
+    @app.route("GET", "/oauth/callback")
+    def oauth_callback(request: Request):
+        _require_auth()
+        q = request["query"]
+        code = q.get("code", "")
+        state = q.get("state", "")
+        cookies = _parse_cookies(request.get("headers") or {})
+        if not code or not state or cookies.get(OAUTH_STATE_COOKIE) != state:
+            raise HTTPError(400, "oauth state mismatch or missing code")
+        ac = app.auth_config
+        base = ac["webhook_base_url"] or ""
+        redirect_uri = f"{base}/oauth/callback"
+        try:
+            token = _auth.exchange_code(
+                ac["client_id"], ac["client_secret"], code, redirect_uri)
+            gh_user = _auth.fetch_user(token)
+        except Exception as e:
+            raise HTTPError(502, f"github oauth failed: {e}")
+        users = store.collection("users")
+        existing = users.find_one({"github_id": gh_user["id"]})
+        user_doc = Document(
+            github_id=gh_user["id"],
+            username=gh_user.get("login", ""),
+            name=gh_user.get("name") or "",
+            avatar_url=gh_user.get("avatar_url") or "",
+            email=gh_user.get("email") or "",
+            # Access token held plaintext for this prototype; encrypt
+            # with a cold key in production.
+            access_token=token,
+            updated_at=utcnow(),
+        )
+        if existing is None:
+            user_doc["created_at"] = utcnow()
+            users.insert_one(user_doc)
+        else:
+            # Re-insert as a "latest snapshot"; the store has no
+            # update-in-place. Keep the old _id so sessions pointing at
+            # it still resolve via github_id lookup.
+            user_doc["_id"] = existing["_id"]
+            user_doc["created_at"] = existing.get("created_at", utcnow())
+            # Purge the stale copy so find_one returns the fresh one.
+            users._docs.data[:] = [
+                d for d in users._docs.data
+                if d.get("github_id") != gh_user["id"]
+            ]
+            users.insert_one(user_doc)
+        session = _auth.sign_session(
+            {"github_id": gh_user["id"], "username": gh_user.get("login", "")},
+            ac["session_secret"])
+        return Response(
+            body=None, status=302,
+            headers={
+                "location": "/",
+                "set-cookie": [
+                    f"{SESSION_COOKIE}={session}; Path=/; HttpOnly; Max-Age={30*86400}; SameSite=Lax",
+                    f"{OAUTH_STATE_COOKIE}=; Path=/; Max-Age=0",
+                ],
+            },
+        )
+
+    @app.route("GET", "/logout")
+    def logout(request: Request):
+        return Response(
+            body=None, status=302,
+            headers={
+                "location": "/",
+                "set-cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0",
+            },
+        )
+
+    @app.route("GET", "/api/v3/me")
+    def me(request: Request):
+        u = _current_user(request, store, app.auth_config["session_secret"])
+        if not u:
+            raise HTTPError(401, "not signed in")
+        # Don't leak the access token to the browser.
+        return Document(
+            github_id=u["github_id"],
+            username=u["username"],
+            name=u.get("name", ""),
+            avatar_url=u.get("avatar_url", ""),
+        )
+
+    @app.route("GET", "/api/v3/me/repos")
+    def my_repos(request: Request):
+        u = _current_user(request, store, app.auth_config["session_secret"])
+        if not u:
+            raise HTTPError(401, "not signed in")
+        # Fetch user's repos via their token; surface name + basics only.
+        import urllib.request, urllib.error, json as _json
+        req = urllib.request.Request(
+            "https://api.github.com/user/repos?per_page=100&sort=pushed",
+            headers={
+                "Authorization": f"Bearer {u['access_token']}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "nyrkio/0.1",
+            })
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = _json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            raise HTTPError(502, f"github repos: {e}")
+        out = []
+        for r in raw:
+            out.append({
+                "full_name": r.get("full_name"),
+                "private": r.get("private"),
+                "description": r.get("description") or "",
+                "has_actions": True,  # we'd check /actions but keep it simple for now
+            })
+        return Collection(out)
+
+    def _submit_backfill(owner: str, repo: str, token: str,
+                        workflow_filename: str | None = None):
+        """Queue a best-effort backfill for the given repo."""
+        def work():
+            try:
+                from .github_ingest import GitHubClient, ingest_workflow_history
+                from benchzoo.parsers import google_benchmark_text
+                client = GitHubClient(token)
+                workflow = workflow_filename or _detect_workflow(client, owner, repo)
+                if not workflow:
+                    LOG.warning("no benchmark workflow found on %s/%s", owner, repo)
+                    return
+                summary = ingest_workflow_history(
+                    client=client, store=store,
+                    owner=owner, repo=repo,
+                    workflow_filename=workflow,
+                    parser=google_benchmark_text,
+                )
+                LOG.info("backfill %s/%s (%s): %s", owner, repo, workflow, summary)
+            except Exception:
+                LOG.exception("backfill failed for %s/%s", owner, repo)
+        app.background.submit(work)
+
+    def _detect_workflow(client, owner: str, repo: str) -> str | None:
+        """Find a plausibly-benchmark workflow by filename substring."""
+        import urllib.request, json as _json
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/{owner}/{repo}/actions/workflows",
+            headers={"Authorization": f"Bearer {client._token}",
+                     "Accept": "application/vnd.github+json",
+                     "User-Agent": "nyrkio/0.1"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return None
+        # Prefer files with "bench" in the path; fall back to "benchmarks.yml".
+        candidates = data.get("workflows", [])
+        for w in candidates:
+            path = (w.get("path") or "").lower()
+            if "bench" in path:
+                return path.split("/")[-1]
+        return "benchmarks.yml"
+
+    @app.route("POST", "/api/v3/me/repos/{owner}/{repo}/connect")
+    def connect_repo(request: Request):
+        u = _current_user(request, store, app.auth_config["session_secret"])
+        if not u:
+            raise HTTPError(401, "not signed in")
+        params = request["path_params"]
+        owner, repo = params["owner"], params["repo"]
+        body = request.get("body") or {}
+        workflow = body.get("workflow") or None
+        # We could also create a GitHub webhook here so future runs
+        # stream in live; for now just a one-shot backfill. The webhook
+        # hook-up lives in /connect-webhook as a follow-up.
+        _submit_backfill(owner, repo, u["access_token"], workflow)
+        return Response(
+            body=Document(accepted=True, repo=f"{owner}/{repo}"),
+            status=202,
+        )
+
+    @app.route("POST", "/api/v3/public/connect")
+    def public_connect(request: Request):
+        """Read-only exploration: anyone can point Nyrkiö at a public
+        repo; we use the app's own PAT to fetch, no webhook is created."""
+        body = request.get("body") or {}
+        repo_str = (body.get("repo") or "").strip().strip("/")
+        workflow = body.get("workflow") or None
+        if "/" not in repo_str:
+            raise HTTPError(400, "repo must be 'owner/name'")
+        owner, repo = repo_str.split("/", 1)
+        token = getattr(app, "github_token", None) or os.environ.get("CLAUDE_GITHUB_PAT", "")
+        if not token:
+            raise HTTPError(503, "no app-level github token configured")
+        _submit_backfill(owner, repo, token, workflow)
+        return Response(
+            body=Document(accepted=True, repo=f"{owner}/{repo}"),
+            status=202,
+        )
 
     @app.route("POST", "/api/v3/webhooks/github")
     def github_webhook(request: Request):

@@ -196,3 +196,83 @@ def test_webhook_ignores_non_completed(fake_client):
 def test_client_requires_token():
     with pytest.raises(ValueError):
         GitHubClient("")
+
+
+# ---------------------------------------------------------------------------
+# Webhook HTTP path — 202 Accepted, work runs in the background executor.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_webhook_returns_202_and_runs_ingest_in_background(fake_client, monkeypatch):
+    """POST to the webhook route returns 202 immediately; the ingest
+    runs on `app.background` and shows up in the store shortly after."""
+    from httpx import AsyncClient, ASGITransport
+    from nyrkiov3.app import build_app
+    from benchzoo.parsers import google_benchmark_text
+    import nyrkiov3.app as app_mod
+    import nyrkiov3.github_ingest as gi
+
+    # Intercept GitHubClient construction inside the webhook handler so
+    # the background task uses our fake.
+    monkeypatch.setattr(gi, "GitHubClient", lambda token: fake_client)
+
+    app = build_app()
+    app.github_token = "fake"
+    app.github_default_parser = google_benchmark_text
+    app.github_step_name = "Run benchmarks"
+
+    payload = {
+        "action": "completed",
+        "workflow_run": fake_client._runs[0],
+        "repository": {"name": "unodb", "owner": {"login": "unodb-dev"}},
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/v3/webhooks/github",
+            json=payload,
+            headers={"x-github-event": "workflow_run"},
+        )
+
+    assert r.status_code == 202, r.text
+    body = r.json()
+    assert body["accepted"] is True
+    assert body["run_id"] == fake_client._runs[0]["id"]
+
+    # Drain the executor to ensure the background task finished.
+    app.background.shutdown(wait=True)
+
+    runs = list(app.store.collection("test_runs").find({}))
+    assert len(runs) == 2
+
+
+@pytest.mark.asyncio
+async def test_webhook_ignores_non_workflow_run_event():
+    from httpx import AsyncClient, ASGITransport
+    from nyrkiov3.app import build_app
+    app = build_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/v3/webhooks/github",
+            json={"zen": "Anything added dilutes everything else."},
+            headers={"x-github-event": "ping"},
+        )
+    assert r.status_code == 200
+    assert r.json()["ignored"] is True
+
+
+@pytest.mark.asyncio
+async def test_webhook_503_when_not_configured():
+    from httpx import AsyncClient, ASGITransport
+    from nyrkiov3.app import build_app
+    app = build_app()  # no github_token / parser configured
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/v3/webhooks/github",
+            json={"action": "completed", "workflow_run": {"id": 1}, "repository": {}},
+            headers={"x-github-event": "workflow_run"},
+        )
+    assert r.status_code == 503

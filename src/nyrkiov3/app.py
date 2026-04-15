@@ -1,11 +1,16 @@
 """Nyrkiö v3 app: ingest + read endpoints, benchzoo-shaped payload,
 FerretDB-compatible store interface. Schemas in SCHEMAS are authoritative."""
 import datetime
+import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from purejson import Document, Collection
 from extjson import ObjectId, dumps, utcnow, parse_date, to_utc, UTC
 from jsonee import JsonEE, Request, Response, HTTPError, InMemoryStore
+
+
+LOG = logging.getLogger("nyrkiov3.app")
 
 
 # Snapshot config defaults. Overridable via build_app(store=…) when a
@@ -107,6 +112,13 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
             store = InMemoryStore()
     app = JsonEE(schema_registry=SCHEMAS)
     app.store = store  # attach for tests / handlers
+    # Background executor for work that shouldn't block HTTP handlers —
+    # webhooks, periodic rebuilds, change-point detection. On Python
+    # 3.14 free-threaded these threads run concurrently with each other
+    # and with the request path; on a GIL build they still decouple the
+    # response from the work.
+    app.background = ThreadPoolExecutor(
+        max_workers=4, thread_name_prefix="nyrkio-bg")
     # Tunables that downstream tools (flyover, Slack summary) read.
     # `recent_cp_days` is the "recent window": any commit within that many
     # days of now() is interesting enough to visit in the daily scan even
@@ -122,11 +134,11 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
     def github_webhook(request: Request):
         """GitHub ``workflow_run`` webhook entry point.
 
-        Validates the ``X-Hub-Signature-256`` HMAC when
-        ``app.github_webhook_secret`` is set and hands the payload to
-        ``github_ingest.handle_workflow_run_event``. Fires
-        synchronously for now; production should enqueue onto a worker
-        and return 202 immediately.
+        Validates the HMAC signature synchronously (so invalid callers
+        get 401 immediately), then submits the ingest work to the
+        background executor and returns 202. GitHub retries on
+        non-2xx, so we must not 500 on parse failure — the background
+        task logs and moves on.
         """
         headers = request.get("headers") or {}
         event = headers.get("x-github-event", "")
@@ -147,14 +159,31 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
         default_parser = getattr(app, "github_default_parser", None)
         if token is None or (parsers is None and default_parser is None):
             raise HTTPError(503, "github ingest not configured")
-        from .github_ingest import GitHubClient, handle_workflow_run_event
-        client = GitHubClient(token)
-        inserted = handle_workflow_run_event(
-            client=client, store=store, payload=request["body"],
-            parsers=parsers, default_parser=default_parser,
-            step_name=getattr(app, "github_step_name", None),
+        payload = request["body"]
+
+        def _do_ingest():
+            try:
+                from .github_ingest import GitHubClient, handle_workflow_run_event
+                client = GitHubClient(token)
+                inserted = handle_workflow_run_event(
+                    client=client, store=store, payload=payload,
+                    parsers=parsers, default_parser=default_parser,
+                    step_name=getattr(app, "github_step_name", None),
+                )
+                LOG.info("webhook ingest: run %s → +%d benchmarks",
+                         (payload.get("workflow_run") or {}).get("id"), inserted)
+            except Exception:
+                LOG.exception("webhook ingest failed for run %s",
+                              (payload.get("workflow_run") or {}).get("id"))
+
+        app.background.submit(_do_ingest)
+        return Response(
+            body=Document(
+                accepted=True,
+                run_id=(payload.get("workflow_run") or {}).get("id"),
+            ),
+            status=202,
         )
-        return Document(inserted=inserted)
 
     repos = store.collection("repos")
     runs = store.collection("test_runs")

@@ -6,7 +6,12 @@ build-backend = "setuptools.build_meta"
 name = "nyrkiov3"
 version = "0.0.1"
 description = "Nyrkiö v3: benchmark ingest, change detection, and query service."
-requires-python = ">=3.11"
+# Target CPython 3.14. The service uses background threads to parse
+# benchmark logs in parallel (`concurrent.futures.ThreadPoolExecutor`);
+# on the free-threaded ("no-GIL") build of 3.14 those threads actually
+# execute concurrently. Python 3.14 is a hard requirement — nothing
+# above will work on older interpreters.
+requires-python = ">=3.14"
 dependencies = [
     "jsonee",
     "purejson",

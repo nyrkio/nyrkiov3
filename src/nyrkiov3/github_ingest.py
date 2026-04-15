@@ -180,8 +180,13 @@ def slice_log(log: str, *, step_name: str | None = None) -> str:
 # Ingest orchestration
 # ----------------------------------------------------------------------------
 
-def _commit_sub_doc(commit_info: dict) -> dict:
-    """Build a v2-shaped `commit` dict from a GitHub commit API payload."""
+def _commit_sub_doc(commit_info: dict, repo: str | None = None) -> dict:
+    """Build a v2-shaped `commit` dict from a GitHub commit API payload.
+
+    ``repo`` is ``owner/name`` — benchzoo's v2 `commit.repo` convention.
+    It's carried through so clients can build a commit URL without
+    going back to the run metadata.
+    """
     commit = commit_info.get("commit", {})
     author = commit.get("author", {})
     committer = commit.get("committer", {})
@@ -201,6 +206,8 @@ def _commit_sub_doc(commit_info: dict) -> dict:
         "message": (commit.get("message") or "").split("\n", 1)[0],
         "author": author.get("name", ""),
     }
+    if repo:
+        out["repo"] = repo
     if commit_time is not None:
         out["commit_time"] = commit_time
     return out
@@ -248,8 +255,9 @@ def ingest_workflow_run(
     except urllib.error.HTTPError as e:
         LOG.warning("commit %s not fetchable (%s); skipping run %s", sha, e, run.get("id"))
         return 0
-    commit = _commit_sub_doc(commit_info) if commit_info else {
-        "sha": sha, "short_sha": sha[:7]
+    repo_id = f"{owner}/{repo}"
+    commit = _commit_sub_doc(commit_info, repo=repo_id) if commit_info else {
+        "sha": sha, "short_sha": sha[:7], "repo": repo_id,
     }
 
     # Timestamp used on the stored run: canonical = commit time if we

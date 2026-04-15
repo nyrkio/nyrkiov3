@@ -22,6 +22,17 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-asyncio>=0.23", "httpx>=0.27", "uvicorn"]
 
+# Sibling-checkout layout: nyrkiov3 expects PureJson, ExtendedJsonSchema,
+# JsonEE, and benchzoo cloned next to it (e.g. /opt/nyrkio-v3/{nyrkiov3,
+# PureJson, ExtendedJsonSchema, JsonEE, benchzoo}). uv installs them in
+# editable mode so a `git pull` in any of them is picked up without
+# re-running `uv sync`.
+[tool.uv.sources]
+purejson = { path = "../PureJson", editable = true }
+extjson  = { path = "../ExtendedJsonSchema", editable = true }
+jsonee   = { path = "../JsonEE", editable = true }
+benchzoo = { path = "../benchzoo", editable = true }
+
 [project.scripts]
 nyrkio-sync = "nyrkiov3.cli:main"
 nyrkio-serve = "nyrkiov3.server:main"

@@ -1,0 +1,26 @@
+[Unit]
+Description=Nyrkiö v3 (benchmark ingest + change detection)
+After=network.target
+
+[Service]
+Type=simple
+User=nyrkio
+Group=nyrkio
+WorkingDirectory=/opt/nyrkio-v3
+# uv runs the app under the project-managed venv + Python 3.14(t).
+# Replace `python3.14t` with `python3.14` if you want the GIL build.
+ExecStart=/usr/local/bin/uv run --python 3.14t python -m nyrkiov3.server
+EnvironmentFile=/etc/nyrkio-v3/env
+Restart=always
+RestartSec=3
+# Persist the store across restarts. Create this directory ahead of
+# time with the right owner; the service will only write to it.
+ReadWritePaths=/var/lib/nyrkio-v3
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

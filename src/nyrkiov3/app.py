@@ -258,7 +258,7 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
         return Response(
             body=None, status=302,
             headers={
-                "location": "/",
+                "location": f"{app.auth_config['base_url']}/",
                 "set-cookie": [
                     f"{SESSION_COOKIE}={session}; Path=/; HttpOnly; Max-Age={30*86400}; SameSite=Lax",
                     f"{OAUTH_STATE_COOKIE}=; Path=/; Max-Age=0",
@@ -271,7 +271,7 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
         return Response(
             body=None, status=302,
             headers={
-                "location": "/",
+                "location": f"{app.auth_config['base_url']}/",
                 "set-cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0",
             },
         )

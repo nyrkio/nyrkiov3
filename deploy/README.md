@@ -25,15 +25,10 @@ sudo useradd --system --home-dir /opt/nyrkio-v3 --shell /usr/sbin/nologin nyrkio
 sudo mkdir -p /opt/nyrkio-v3 /var/lib/nyrkio-v3 /etc/nyrkio-v3
 sudo chown nyrkio:nyrkio /var/lib/nyrkio-v3
 sudo -u nyrkio -H bash -c 'cd /opt/nyrkio-v3 && \
-  git clone https://github.com/nyrkio/nyrkiov3        nyrkiov3 && \
-  git clone https://github.com/nyrkio/purejson        PureJson && \
-  git clone https://github.com/nyrkio/extjson         ExtendedJsonSchema && \
-  git clone https://github.com/nyrkio/jsonee          JsonEE && \
-  git clone https://github.com/nyrkio/benchzoo        benchzoo && \
-  git clone https://github.com/nyrkio/AuroraBorealis  AuroraBorealis'
-# Symlink the nyrkiov3 checkout's venv at the opt root for simpler
-# WorkingDirectory in the systemd unit.
-sudo ln -sf /opt/nyrkio-v3/nyrkiov3/pyproject.toml /opt/nyrkio-v3/pyproject.toml
+  git clone https://github.com/nyrkio/nyrkiov3       nyrkiov3 && \
+  git clone https://github.com/nyrkio/AuroraBorealis AuroraBorealis'
+# That's all — purejson, extjson, jsonee, benchzoo are pulled from
+# GitHub by `uv sync` (see [tool.uv.sources] in pyproject.toml).
 ```
 
 Install deps (uv resolves against the pyproject's `requires-python=">=3.14"`):

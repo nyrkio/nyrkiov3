@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nyrkiov3"
+version = "0.0.1"
+description = "Nyrkiö v3: benchmark ingest, change detection, and query service."
+requires-python = ">=3.11"
+dependencies = [
+    "jsonee",
+    "purejson",
+    "extjson",
+    "benchzoo",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "httpx>=0.27", "uvicorn"]
+
+[project.scripts]
+nyrkio-sync = "nyrkiov3.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"

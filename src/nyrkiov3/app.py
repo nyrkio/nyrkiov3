@@ -254,6 +254,10 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
             filter_["branch"] = q["branch"]
         if "test_name" in q:
             filter_["attributes.test_name"] = q["test_name"]
+        if "runner" in q:
+            filter_["attributes.runner"] = q["runner"]
+        if "workflow" in q:
+            filter_["attributes.workflow"] = q["workflow"]
 
         # Query-string timestamps are the one place where we accept naive input
         # and assume UTC — it's a URL convention, documented for the caller.
@@ -288,5 +292,65 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
             hits = Collection(narrowed)
 
         return Collection(hits)
+
+    # Candidate dimensions the facets endpoint and UI treat as selectable
+    # filters. Anything with a single distinct value in a given window is
+    # hidden from the UI.
+    _FACET_FIELDS = [
+        ("branch", lambda d: d.get("branch")),
+        ("workflow", lambda d: (d.get("attributes") or {}).get("workflow")),
+        ("runner", lambda d: (d.get("attributes") or {}).get("runner")),
+    ]
+
+    @app.route("GET", "/api/v3/tests/{platform}/{namespace}/{repo}/facets")
+    def facets(request: Request):
+        """Distinct values for each known dimension within the given
+        filter window. Used by the UI to decide which dimensions to
+        surface as radio groups (>1 value) vs hide (1 value).
+
+        Also returns the timestamp span (min / max) of the matched
+        runs so the UI can bound its time-range slider.
+        """
+        params = request["path_params"]
+        absolute = f"{params['platform']}/{params['namespace']}/{params['repo']}"
+        q = request["query"]
+        filter_ = {"absolute_name": absolute}
+        # Facets respect existing filters so successive narrowing is
+        # consistent: pick a runner, facets recompute against that slice.
+        if "branch" in q:
+            filter_["branch"] = q["branch"]
+        if "workflow" in q:
+            filter_["attributes.workflow"] = q["workflow"]
+        if "runner" in q:
+            filter_["attributes.runner"] = q["runner"]
+        if "test_name" in q:
+            filter_["attributes.test_name"] = q["test_name"]
+        hits = list(runs.find(filter_))
+        facets_out: dict = {}
+        for name, extract in _FACET_FIELDS:
+            vals = set()
+            for d in hits:
+                v = extract(d)
+                if v:
+                    vals.add(v)
+            if vals:
+                facets_out[name] = sorted(vals)
+        # Timestamp span.
+        tmin = tmax = None
+        for d in hits:
+            t = d.get("timestamp")
+            if t is None:
+                continue
+            if tmin is None or t < tmin: tmin = t
+            if tmax is None or t > tmax: tmax = t
+        span = None
+        if tmin is not None:
+            span = {"min": tmin, "max": tmax}
+        return Document(
+            facets=facets_out,
+            varying=[k for k, v in facets_out.items() if len(v) > 1],
+            count=len(hits),
+            timestamp_span=span,
+        )
 
     return app

@@ -298,7 +298,11 @@ def ingest_workflow_run(
             metrics = entry.get("metrics", [])
             if not test_name or not metrics:
                 continue
-            attrs = {"test_name": test_name, "runner": job.get("name", "")}
+            attrs = {
+                "test_name": test_name,
+                "runner": job.get("name", ""),
+                "workflow": workflow_filename,
+            }
             extra_info = dict(entry.get("extra_info") or {})
             if "sut" in entry:
                 extra_info["sut"] = entry["sut"]

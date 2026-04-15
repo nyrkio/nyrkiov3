@@ -174,3 +174,62 @@ async def test_benchzoo_shaped_end_to_end(client):
     # Sorted by timestamp ascending.
     values = [d["metrics"][0]["value"] for d in data]
     assert values == sorted(values)
+
+
+async def test_facets_returns_varying_and_timestamp_span(client):
+    # Ingest three runs on two different runners so the `runner` facet
+    # varies; `branch` stays on "main" (single value).
+    for runner, value in [("intel", 1.0), ("intel", 1.1), ("arm", 2.0)]:
+        r = await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [{
+            "branch": "main",
+            "git_commit": f"sha-{runner}-{value}",
+            "timestamp": f"2026-01-0{int(value*10) % 9 + 1}T12:00:00+00:00",
+            "attributes": {"test_name": "t1", "runner": runner, "workflow": "bench.yml"},
+            "metrics": [{"name": "latency", "unit": "ms", "value": value}],
+            "passed": True,
+        }]})
+        assert r.status_code == 200
+
+    r = await client.get("/api/v3/tests/gh/foo/bar/facets")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 3
+    # branch has 1 distinct value → in facets but not in varying.
+    assert body["facets"]["branch"] == ["main"]
+    assert "branch" not in body["varying"]
+    # runner varies.
+    assert set(body["facets"]["runner"]) == {"intel", "arm"}
+    assert "runner" in body["varying"]
+    # timestamp span present.
+    assert "timestamp_span" in body and body["timestamp_span"] is not None
+
+
+async def test_facets_narrow_when_filter_applied(client):
+    for runner in ("intel", "arm"):
+        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [{
+            "branch": "main", "git_commit": "s",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "attributes": {"test_name": "t", "runner": runner},
+            "metrics": [{"name": "l", "value": 1}],
+            "passed": True,
+        }]})
+    # With runner=intel filter, that's the only distinct value → not varying.
+    r = await client.get("/api/v3/tests/gh/foo/bar/facets?runner=intel")
+    body = r.json()
+    assert body["facets"]["runner"] == ["intel"]
+    assert "runner" not in body["varying"]
+
+
+async def test_list_filters_on_runner(client):
+    for runner in ("intel", "arm"):
+        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [{
+            "branch": "main", "git_commit": "s",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "attributes": {"test_name": "t", "runner": runner},
+            "metrics": [{"name": "l", "value": 1}],
+            "passed": True,
+        }]})
+    r = await client.get("/api/v3/tests/gh/foo/bar?runner=arm")
+    body = r.json()
+    assert len(body) == 1
+    assert body[0]["attributes"]["runner"] == "arm"

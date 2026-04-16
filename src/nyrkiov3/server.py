@@ -49,7 +49,17 @@ def main() -> int:
     if static_dir and os.path.isdir(static_dir):
         app.static("/", static_dir)
         print(f"static: serving {static_dir} at /")
-    bind = os.environ.get("NYRKIO_BIND", "127.0.0.1:8123")
+    # Bind address. Keep on localhost when a same-host reverse proxy
+    # fronts the app. When nginx runs inside Docker on Linux and the
+    # app runs on the host, you'll typically need to bind on the
+    # Docker bridge address (or 0.0.0.0) instead — that's a
+    # per-deploy call, not a code one.
+    raw_bind = os.environ.get("NYRKIO_BIND")
+    bind = raw_bind or "127.0.0.1:8123"
+    if raw_bind is None:
+        print("NYRKIO_BIND not set; defaulting to 127.0.0.1:8123")
+    else:
+        print(f"NYRKIO_BIND={raw_bind!r}")
     host, _, port = bind.rpartition(":")
     host = host or "127.0.0.1"
     try:

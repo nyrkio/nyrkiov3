@@ -3,14 +3,16 @@
 ## location and proxy_pass means /v3/foo is forwarded as /foo to the
 ## backend — matches the relative-URL style the app uses.
 ##
-## `host.docker.internal` requires the nginx service in docker-compose
-## to declare:
-##   extra_hosts:
-##     - "host.docker.internal:host-gateway"
-## (a one-line change inside the nginx service in docker-compose.yml).
+## The backend is reached via the Docker bridge gateway IP. On Linux,
+## `host.docker.internal` does NOT resolve inside a container by
+## default and `extra_hosts: host-gateway` is finicky; the bridge IP
+## is what actually works. Check yours with:
+##   docker network inspect <nginx's network> | grep Gateway
+## It's typically 172.17.0.1 (default bridge) or a project-specific
+## value like 172.7.0.1 / 172.18.0.1.
 
 location /v3/ {
-    proxy_pass http://host.docker.internal:8123/;
+    proxy_pass http://172.17.0.1:8123/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;

@@ -69,24 +69,29 @@ journalctl -u nyrkio-v3 -f
 ## 5. Nginx
 
 Add the contents of `nginx-v3.snippet` to the `staging.nyrkio.com`
-server {} block in `/home/claude/nyrkio/nginx/nginx.conf`. Then
-extend the nginx service in `docker-compose.yml` (or its dev variant)
-with:
+server {} block in `/home/claude/nyrkio/nginx/nginx.conf`.
 
-```yaml
-services:
-  nginx:
-    # ...existing config...
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-```
-
-Reload:
+The snippet proxies to `172.17.0.1:8123`. That's the Docker default
+bridge gateway — the IP the host is reachable at from inside any
+container on that bridge. **Check yours:**
 
 ```bash
-cd /home/claude/nyrkio
-docker compose up -d nginx           # picks up the extra_hosts
-docker compose exec nginx nginx -s reload
+docker network inspect bridge | grep Gateway      # default bridge
+docker network inspect <project-net> | grep Gateway   # if compose uses its own
+```
+
+It's commonly `172.17.0.1`, but compose stacks often allocate their
+own subnets like `172.18.0.1` or `172.7.0.1`. Put whatever you see
+into both the `NYRKIO_BIND` env var and the nginx `proxy_pass` target.
+
+> `host.docker.internal` works on Docker Desktop (Mac/Windows) but
+> NOT on native Linux Docker, even with `extra_hosts: host-gateway`
+> in some setups. Just use the bridge IP.
+
+Reload nginx:
+
+```bash
+docker compose exec nginx nginx -t && docker compose exec nginx nginx -s reload
 ```
 
 ## 6. Smoke test

@@ -6,16 +6,20 @@ After=network.target
 Type=simple
 User=nyrkio
 Group=nyrkio
-WorkingDirectory=/opt/nyrkio-v3
+WorkingDirectory=/opt/nyrkio-v3/nyrkiov3
 # uv runs the app under the project-managed venv + Python 3.14(t).
 # Replace `python3.14t` with `python3.14` if you want the GIL build.
 ExecStart=/usr/local/bin/uv run --python 3.14t python -m nyrkiov3.server
 EnvironmentFile=/etc/nyrkio-v3/env
+# Keep .pyc files out of the source tree so the code install can stay
+# read-only and a `git pull` doesn't fight with stale bytecode.
+Environment=PYTHONPYCACHEPREFIX=/var/lib/nyrkio-v3/pycache
 Restart=always
 RestartSec=3
-# Persist the store across restarts. Create this directory ahead of
-# time with the right owner; the service will only write to it.
-ReadWritePaths=/var/lib/nyrkio-v3
+# Two writable paths: the data dir (snapshot + pycache) and the venv
+# uv manages inside the project checkout (uv writes timestamps and
+# ephemera at run time, even when deps are locked).
+ReadWritePaths=/var/lib/nyrkio-v3 /opt/nyrkio-v3/nyrkiov3/.venv
 # Hardening
 NoNewPrivileges=true
 PrivateTmp=true

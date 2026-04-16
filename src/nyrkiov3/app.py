@@ -380,6 +380,37 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
             status=202,
         )
 
+    @app.route("GET", "/api/v3/public/dashboards")
+    def public_dashboards(request: Request):
+        """All repos with data in the store, with aggregated stats.
+        Surfaced on the landing page so visitors can click through
+        without needing to know which repos are available.
+
+        Privacy: returns everything in the store today — fine while
+        the store is public-only. When we add private repos, this
+        needs to filter by visibility (or per-user auth)."""
+        by_repo: dict = {}
+        for d in runs.find({}):
+            abs_name = d.get("absolute_name", "")
+            if not abs_name:
+                continue
+            entry = by_repo.setdefault(abs_name, {
+                "absolute_name": abs_name,
+                "run_count": 0,
+                "latest": None,
+            })
+            entry["run_count"] += 1
+            ts = d.get("timestamp")
+            if ts is None:
+                continue
+            # Timestamps are datetime; compare directly.
+            if entry["latest"] is None or ts > entry["latest"]:
+                entry["latest"] = ts
+        out = sorted(by_repo.values(),
+                     key=lambda r: r["latest"] or datetime.datetime.min.replace(tzinfo=UTC),
+                     reverse=True)
+        return Collection(out)
+
     @app.route("POST", "/api/v3/public/connect")
     def public_connect(request: Request):
         """Read-only exploration: anyone can point Nyrkiö at a public

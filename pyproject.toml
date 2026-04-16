@@ -17,10 +17,13 @@ dependencies = [
     "purejson",
     "extjson",
     "benchzoo",
+    # uvicorn is the runtime ASGI server — production needs it, so
+    # it's a direct dep, not dev-only.
+    "uvicorn",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-asyncio>=0.23", "httpx>=0.27", "uvicorn"]
+dev = ["pytest>=7", "pytest-asyncio>=0.23", "httpx>=0.27"]
 
 # The four backing libraries aren't on PyPI; pull each from GitHub.
 # uv resolves the latest commit on `main` at sync time and pins it in

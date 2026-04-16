@@ -11,14 +11,8 @@
 ## It's typically 172.17.0.1 (default bridge) or a project-specific
 ## value like 172.7.0.1 / 172.18.0.1.
 
-# Everything — UI, auth, API, webhooks — lives under /v3/ so we
-# don't shadow the existing `/api/` routes that go to the v0 backend.
-# External callers hit the API at /v3/api/v3/…:
-#   https://staging.nyrkio.com/v3/api/v3/webhooks/github
-#   https://staging.nyrkio.com/v3/api/v3/ingest/gh/{owner}/{repo}
-# Ugly, but honest to the two-API coexistence and keeps the scope
-# isolated. The trailing slash on location + proxy_pass strips the
-# /v3/ prefix so the backend sees its canonical paths.
+# UI + auth routes: strip /v3/ so the backend sees /login,
+# /oauth/callback, /api/v3/... directly.
 location /v3/ {
     proxy_pass http://172.17.0.1:8123/;
     proxy_http_version 1.1;
@@ -33,4 +27,20 @@ location /v3/ {
     proxy_read_timeout 120s;
     # Pass Set-Cookie through unchanged.
     proxy_pass_header Set-Cookie;
+}
+
+# Raw API — /api/v3/* forwarded through WITHOUT the /v3/ prefix. Lets
+# external callers (GitHub webhooks, CI ingest scripts, curl) hit the
+# backend at its canonical path:
+#   https://staging.nyrkio.com/api/v3/webhooks/github
+#   https://staging.nyrkio.com/api/v3/ingest/gh/{owner}/{repo}
+# and not have to know about the UI path prefix.
+location /api/v3/ {
+    proxy_pass http://172.17.0.1:8123/api/v3/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 120s;
 }

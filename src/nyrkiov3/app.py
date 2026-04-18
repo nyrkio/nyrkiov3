@@ -53,6 +53,13 @@ SCHEMAS = {
         },
         "required": ["name", "value"],
     },
+    # TestRun is the benchzoo canonical shape plus a few persistence
+    # fields (``_id``, ``repo_id``, ``absolute_name``, ``source``).
+    # Nothing gets flattened, promoted, or renamed between parser
+    # output and storage — the shape parsers emit is the shape we
+    # persist. Queries that used to hit top-level ``timestamp`` /
+    # ``branch`` / ``git_commit`` now address ``commit.commit_time``
+    # / ``commit.ref`` / ``commit.sha``.
     "TestRun": {
         "$id": "TestRun",
         "type": "object",
@@ -60,16 +67,17 @@ SCHEMAS = {
             "_id": {"type": "objectid"},
             "repo_id": {"type": "objectid"},
             "absolute_name": {"type": "string"},
-            "branch": {"type": "string"},
-            "git_commit": {"type": "string"},
-            "timestamp": {"type": "date"},
-            "attributes": {"type": "object"},
+            # benchzoo-shape sub-documents:
+            "test":    {"type": "object"},   # {test_name, params?, ...}
+            "run":     {"type": "object"},   # {passed, ...}
+            "env":     {"type": "object"},   # {framework, ...}
             "metrics": {"type": "array", "items": "Metric"},
+            "commit":  {"type": "object"},   # {commit_time, sha, ref, repo_url, ...}
             "extra_info": {"type": "object"},
-            "passed": {"type": "boolean"},
-            "source": {"type": "object"},
+            "sut":     {"type": "object"},
+            "source":  {"type": "object"},
         },
-        "required": ["absolute_name", "timestamp", "attributes", "metrics", "passed"],
+        "required": ["absolute_name", "test", "metrics"],
     },
     "IngestPayload": {
         "$id": "IngestPayload",
@@ -79,21 +87,24 @@ SCHEMAS = {
         },
         "required": ["runs"],
     },
-    # Ingest format: looks like benchzoo's output — repo fields optional on input,
-    # the endpoint fills them from path params.
+    # External ingest accepts the same benchzoo shape every parser
+    # emits. Callers that don't know the commit (most framework
+    # parsers) can omit ``commit``; the ingest layer fills ``sha`` /
+    # ``ref`` from the request context (path params / webhook event)
+    # when available.
     "IngestRun": {
         "$id": "IngestRun",
         "type": "object",
         "properties": {
-            "branch": {"type": "string"},
-            "git_commit": {"type": "string"},
-            "timestamp": {"type": ["date", "string", "integer"]},
-            "attributes": {"type": "object"},
+            "test":    {"type": "object"},
+            "run":     {"type": "object"},
+            "env":     {"type": "object"},
             "metrics": {"type": "array", "items": "Metric"},
+            "commit":  {"type": "object"},
             "extra_info": {"type": "object"},
-            "passed": {"type": "boolean"},
+            "sut":     {"type": "object"},
         },
-        "required": ["attributes", "metrics"],
+        "required": ["test", "metrics"],
     },
 }
 
@@ -121,6 +132,95 @@ def _current_user(request, store, secret):
         return None
     users = store.collection("users")
     return users.find_one({"github_id": payload.get("github_id")})
+
+
+# Small helpers for the public/ingest-url handler. Kept at module level
+# because they're pure and unit-testable without spinning up an app.
+
+_GENERIC_STEMS = {"data", "benchmark", "benchmarks", "metrics", "results", "bench"}
+
+
+_NAT_SPLIT_RE = None  # lazy
+
+
+def _natural_key(val):
+    """Sort key that treats runs of digits as integers so facet values
+    like ``"test_2"`` come before ``"test_10"``, and numeric-string
+    args (``"64", "512", "4096"``) sort numerically. Non-digit
+    segments compare case-insensitively as strings. Works for mixed
+    int/str inputs, since attribute values may be either.
+    """
+    global _NAT_SPLIT_RE
+    if _NAT_SPLIT_RE is None:
+        import re as _re
+        _NAT_SPLIT_RE = _re.compile(r"(\d+)")
+    s = str(val)
+    parts = _NAT_SPLIT_RE.split(s)
+    # (0, "") sentinel prefix so int-valued segments never collide with
+    # str-valued segments when a split produces both in the same slot.
+    out = []
+    for p in parts:
+        if p.isdigit():
+            out.append((0, int(p)))
+        else:
+            out.append((1, p.lower()))
+    return out
+
+
+def _parse_repo_url(url):
+    """``https://github.com/owner/name`` → ``("gh", "owner", "name")``.
+    Anything we don't recognise returns ``None`` — callers use that as
+    "skip this row", which is safer than guessing.
+    """
+    if not url:
+        return None
+    u = url.rstrip("/")
+    for prefix, platform in (
+        ("https://github.com/", "gh"),
+        ("http://github.com/", "gh"),
+        ("github.com/", "gh"),
+        ("https://gitlab.com/", "gl"),
+    ):
+        if u.startswith(prefix):
+            parts = u[len(prefix):].split("/")
+            if len(parts) >= 2:
+                return platform, parts[0], parts[1]
+    return None
+
+
+def _derive_test_name_from_path(path):
+    """Old Nyrkiö put the test name in the dashboard URL, not in the
+    data file. Replicate that convention by deriving a name from the
+    file's path: the filename stem, or the parent directory if the
+    stem is a generic placeholder (``devhub/data.json`` → ``devhub``).
+    """
+    parts = [p for p in path.replace("\\", "/").split("/") if p]
+    if not parts:
+        return "test"
+    fname = parts[-1]
+    stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+    if stem.lower() in _GENERIC_STEMS and len(parts) >= 2:
+        return parts[-2]
+    return stem or "test"
+
+
+def _finalise_run(raw, *, repo_id, absolute, default_source):
+    """Attach persistence-only fields to a benchzoo-shaped run dict
+    and return the Document ready for ``insert_one``. Doesn't rewrite,
+    flatten, or promote anything — the run is stored exactly the
+    shape benchzoo emits.
+
+    The only value this function adds: ``repo_id`` / ``absolute_name``
+    for the routing decision, and a ``source`` stamp identifying the
+    ingest path (parser name, webhook event, api POST, etc.) when the
+    caller hasn't attached one already.
+    """
+    doc = Document(raw)
+    doc["repo_id"] = repo_id
+    doc["absolute_name"] = absolute
+    if "source" not in doc:
+        doc["source"] = default_source
+    return doc
 
 
 def build_app(store=None, recent_cp_days=14, snapshot_path=None,
@@ -324,17 +424,18 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
         def work():
             try:
                 from .github_ingest import GitHubClient, ingest_workflow_history
-                from benchzoo.parsers import google_benchmark_text
                 client = GitHubClient(token)
                 workflow = workflow_filename or _detect_workflow(client, owner, repo)
                 if not workflow:
                     LOG.warning("no benchmark workflow found on %s/%s", owner, repo)
                     return
+                # No parser= pinned: each job's log is sniffed and
+                # dispatched via benchzoo.sniff. The workflow may
+                # legitimately run different benchmark tools per job.
                 summary = ingest_workflow_history(
                     client=client, store=store,
                     owner=owner, repo=repo,
                     workflow_filename=workflow,
-                    parser=google_benchmark_text,
                 )
                 LOG.info("backfill %s/%s (%s): %s", owner, repo, workflow, summary)
             except Exception:
@@ -400,12 +501,15 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
                 "latest": None,
             })
             entry["run_count"] += 1
-            ts = d.get("timestamp")
-            if ts is None:
+            t = (d.get("commit") or {}).get("commit_time")
+            if not isinstance(t, (int, float)):
                 continue
-            # Timestamps are datetime; compare directly.
-            if entry["latest"] is None or ts > entry["latest"]:
-                entry["latest"] = ts
+            if entry["latest"] is None or t > entry["latest"]:
+                entry["latest"] = t
+        # Convert the epoch-int latest to a datetime for the response.
+        for entry in by_repo.values():
+            if isinstance(entry["latest"], (int, float)):
+                entry["latest"] = datetime.datetime.fromtimestamp(entry["latest"], tz=UTC)
         out = sorted(by_repo.values(),
                      key=lambda r: r["latest"] or datetime.datetime.min.replace(tzinfo=UTC),
                      reverse=True)
@@ -414,19 +518,34 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
     @app.route("POST", "/api/v3/public/connect")
     def public_connect(request: Request):
         """Read-only exploration: anyone can point Nyrkiö at a public
-        repo; we use the app's own PAT to fetch, no webhook is created."""
+        repo; we use the app's own PAT to fetch, no webhook is created.
+
+        Body: ``{"repo": "owner/name", "workflows"?: ["a.yml", ...]}``.
+        If ``workflows`` is present, one backfill job is queued per
+        filename. Without it we fall through to ``_detect_workflow``
+        for a single best-guess pick — preserved for the no-JS /
+        scripted caller, but the UI always passes an explicit list now.
+        A deprecated scalar ``workflow`` alias is still accepted.
+        """
         body = request.get("body") or {}
         repo_str = (body.get("repo") or "").strip().strip("/")
-        workflow = body.get("workflow") or None
         if "/" not in repo_str:
             raise HTTPError(400, "repo must be 'owner/name'")
         owner, repo = repo_str.split("/", 1)
         token = getattr(app, "github_token", None) or os.environ.get("CLAUDE_GITHUB_PAT", "")
         if not token:
             raise HTTPError(503, "no app-level github token configured")
-        _submit_backfill(owner, repo, token, workflow)
+        workflows = body.get("workflows")
+        if not workflows and body.get("workflow"):
+            workflows = [body["workflow"]]
+        if workflows:
+            for wf in workflows:
+                _submit_backfill(owner, repo, token, wf)
+        else:
+            _submit_backfill(owner, repo, token, None)
         return Response(
-            body=Document(accepted=True, repo=f"{owner}/{repo}"),
+            body=Document(accepted=True, repo=f"{owner}/{repo}",
+                          workflows=workflows or []),
             status=202,
         )
 
@@ -517,31 +636,115 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
         payload_runs = request["body"]["runs"]
         inserted = []
         for raw in payload_runs:
-            ts = raw.get("timestamp")
-            if isinstance(ts, (int, float)):
-                ts = datetime.datetime.fromtimestamp(ts, tz=UTC)
-            elif isinstance(ts, str):
-                ts = parse_date(ts)  # strict: rejects naive ISO strings
-            elif isinstance(ts, datetime.datetime):
-                ts = to_utc(ts)
-            elif ts is None:
-                ts = utcnow()
-
-            doc = Document(
-                repo_id=repo_doc["_id"],
-                absolute_name=absolute,
-                branch=raw.get("branch", "main"),
-                git_commit=raw.get("git_commit", ""),
-                timestamp=ts,
-                attributes=raw["attributes"],
-                metrics=raw["metrics"],
-                extra_info=raw.get("extra_info", {}),
-                passed=raw.get("passed", True),
-                source=raw.get("source", {"kind": "api_ingest"}),
-            )
-            run_id = runs.insert_one(doc)
+            run_id = runs.insert_one(_finalise_run(
+                raw, repo_id=repo_doc["_id"], absolute=absolute,
+                default_source={"kind": "api_ingest"},
+            ))
             inserted.append(run_id)
         return Document(inserted=len(inserted), repo_id=repo_doc["_id"])
+
+    def _insert_runs(platform, namespace, repo, runs_list,
+                     default_source=None):
+        """Insert a batch of benchzoo-shaped runs under the given repo.
+        ``_finalise_run`` just attaches persistence fields; no shape
+        rewriting happens."""
+        repo_doc = _ensure_repo(platform, namespace, repo)
+        absolute = repo_doc["absolute_name"]
+        default_source = default_source or {"kind": "parsed"}
+        count = 0
+        for raw in runs_list:
+            runs.insert_one(_finalise_run(
+                raw, repo_id=repo_doc["_id"], absolute=absolute,
+                default_source=default_source,
+            ))
+            count += 1
+        return absolute, count
+
+    @app.route("POST", "/api/v3/public/ingest-url")
+    def public_ingest_url(request: Request):
+        """Fetch a single file from a public GitHub repo, content-sniff
+        it, dispatch to the matching benchzoo parser, and ingest.
+
+        Routing: each parsed run is filed under the repo its
+        ``commit.repo_url`` points at (the Nyrkiö-v1 case, where a
+        file in repo X can carry measurements about repo Y — see
+        tigerbeetle/devhubdb). For any other format, the parser
+        doesn't know the target repo, so we fall back to the
+        ``source_repo`` — "the data lives here, so probably about
+        here" is the only defensible default.
+        """
+        import urllib.request
+        from benchzoo import sniff as _sniff_content
+        from benchzoo.parsers import find_parser
+
+        body = request.get("body") or {}
+        source_repo = (body.get("source_repo") or "").strip().strip("/")
+        path = (body.get("path") or "").strip().lstrip("/")
+        if "/" not in source_repo or not path:
+            raise HTTPError(400, "expected {source_repo: 'owner/name', path: 'dir/file.json'}")
+        default_target = _parse_repo_url(f"https://github.com/{source_repo}")
+        if default_target is None:
+            raise HTTPError(400, f"bad source_repo: {source_repo!r}")
+        # Test name: caller can override; otherwise derive from the
+        # file's path the same way old Nyrkiö dashboard URLs worked.
+        test_name = (body.get("test_name") or "").strip() or _derive_test_name_from_path(path)
+        url = f"https://raw.githubusercontent.com/{source_repo}/HEAD/{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                blob = resp.read().decode("utf-8")
+        except Exception as e:
+            raise HTTPError(502, f"fetch failed: {e}")
+        framework = _sniff_content(blob)
+        if framework is None:
+            raise HTTPError(
+                400,
+                "couldn't identify benchmark format — sniff returned no match. "
+                "Supported formats are listed in benchzoo.parsers.PARSERS."
+            )
+        try:
+            parser_mod = find_parser(framework)
+        except (KeyError, ValueError) as e:
+            raise HTTPError(
+                500,
+                f"sniff returned {framework!r} but no single parser module "
+                f"matched: {e}"
+            )
+        try:
+            runs_flat = parser_mod.parse(blob)
+        except Exception as e:
+            raise HTTPError(400, f"parse ({framework}) failed: {e}")
+        # Route each run to the repo its commit claims — or, if the
+        # parser didn't extract a commit, back to the source repo.
+        # The URL-derived test name is injected if the parser didn't
+        # set one (common for v1 files; gbench always sets one).
+        by_repo: dict[tuple[str, str, str], list[dict]] = {}
+        for run in runs_flat:
+            commit = run.get("commit") or {}
+            target = _parse_repo_url(commit.get("repo_url") or "") or default_target
+            test = run.setdefault("test", {})
+            if test_name and not test.get("test_name"):
+                test["test_name"] = test_name
+            by_repo.setdefault(target, []).append(run)
+        if not by_repo:
+            raise HTTPError(400, "no rows after parsing — file may be empty or malformed")
+        results = []
+        for (platform, namespace, repo), runs_list in by_repo.items():
+            absolute, count = _insert_runs(
+                platform, namespace, repo, runs_list,
+                default_source={"kind": "public_ingest_url"},
+            )
+            results.append({"absolute_name": absolute, "inserted": count})
+        # Primary target = the repo with the most rows. Tigerbeetle-style
+        # files almost always have a single target; the multi-repo case
+        # is legal but rare.
+        results.sort(key=lambda r: r["inserted"], reverse=True)
+        primary = results[0]
+        target_short = primary["absolute_name"].split("/", 1)[1]  # strip gh/
+        return Response(
+            body=Document(target_repo=target_short, inserted=primary["inserted"],
+                          test_name=test_name, all_targets=results),
+            status=200,
+        )
 
     @app.route("GET", "/api/v3/tests/{platform}/{namespace}/{repo}")
     def list_tests(request: Request):
@@ -550,14 +753,7 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
         q = request["query"]
 
         filter_ = {"absolute_name": absolute}
-        if "branch" in q:
-            filter_["branch"] = q["branch"]
-        if "test_name" in q:
-            filter_["attributes.test_name"] = q["test_name"]
-        if "runner" in q:
-            filter_["attributes.runner"] = q["runner"]
-        if "workflow" in q:
-            filter_["attributes.workflow"] = q["workflow"]
+        _apply_facet_filters(filter_, q)
 
         # Query-string timestamps are the one place where we accept naive input
         # and assume UTC — it's a URL convention, documented for the caller.
@@ -568,22 +764,29 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
                 dt = dt.replace(tzinfo=UTC)
             return dt.astimezone(UTC)
 
+        # Time range narrows on commit time — the authoritative
+        # ordering signal. A UI caller passes ISO-8601 strings; we
+        # compare against ``commit.commit_time`` which is stored as
+        # an epoch int. Convert once at the boundary.
         ts_filter = {}
         if "since" in q:
-            ts_filter["$gte"] = _parse_qs_ts(q["since"])
+            ts_filter["$gte"] = int(_parse_qs_ts(q["since"]).timestamp())
         if "until" in q:
-            ts_filter["$lte"] = _parse_qs_ts(q["until"])
+            ts_filter["$lte"] = int(_parse_qs_ts(q["until"]).timestamp())
         if ts_filter:
-            filter_["timestamp"] = ts_filter
+            filter_["commit.commit_time"] = ts_filter
 
-        hits = runs.find(filter_, sort={"timestamp": 1})
+        hits = runs.find(filter_, sort={"commit.commit_time": 1})
 
-        # If metric= is specified, narrow each run's metrics list.
-        metric_name = q.get("metric")
-        if metric_name:
+        # metric= narrows each run's metrics list. Repeated params
+        # (``?metric=a&metric=b``) keep any matching name; missing →
+        # keep all metrics untouched.
+        metric_set = {v for v in q.getall("metric") if v}
+        if metric_set:
             narrowed = []
             for d in hits:
-                sub = [m for m in d.get("metrics", []) if m.get("name") == metric_name]
+                sub = [m for m in d.get("metrics", [])
+                       if m.get("name") in metric_set]
                 if not sub:
                     continue
                 nd = Document(dict(d.data))
@@ -593,14 +796,38 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
 
         return Collection(hits)
 
-    # Candidate dimensions the facets endpoint and UI treat as selectable
-    # filters. Anything with a single distinct value in a given window is
-    # hidden from the UI.
-    _FACET_FIELDS = [
-        ("branch", lambda d: d.get("branch")),
-        ("workflow", lambda d: (d.get("attributes") or {}).get("workflow")),
-        ("runner", lambda d: (d.get("attributes") or {}).get("runner")),
-    ]
+    # Known dimensions that live at well-defined nested paths in a
+    # benchzoo-shaped run. Every other facet key is assumed to be a
+    # free-form benchmark parameter under ``test.params.*`` — that's
+    # where parsers write threads / args / vus / clients / iterations
+    # / and any future knob.
+    _SCALAR_FACETS = {
+        "branch":    "commit.ref",
+        "test_name": "test.test_name",
+        "runner":    "run.runner",
+        "workflow":  "run.workflow",
+    }
+
+    def _filter_path(key):
+        return _SCALAR_FACETS.get(key, f"test.params.{key}")
+
+    def _apply_facet_filters(filter_, q):
+        """Honour repeated-param multi-value filters. ``?branch=main``
+        is a single-value equality; ``?branch=main&branch=develop``
+        becomes ``$in``. Empty values (``?branch=``) are skipped —
+        that's the UI signal for 'all'. ``metric`` is handled by the
+        caller because it narrows each run's ``metrics[]`` list rather
+        than filtering runs on a scalar field."""
+        for key in q:
+            if key == "metric":
+                continue
+            if key in ("since", "until"):
+                continue
+            vals = [v for v in q.getall(key) if v]
+            if not vals:
+                continue
+            filter_[_filter_path(key)] = (vals[0] if len(vals) == 1
+                                          else {"$in": vals})
 
     @app.route("GET", "/api/v3/tests/{platform}/{namespace}/{repo}/facets")
     def facets(request: Request):
@@ -615,37 +842,54 @@ def build_app(store=None, recent_cp_days=14, snapshot_path=None,
         absolute = f"{params['platform']}/{params['namespace']}/{params['repo']}"
         q = request["query"]
         filter_ = {"absolute_name": absolute}
-        # Facets respect existing filters so successive narrowing is
-        # consistent: pick a runner, facets recompute against that slice.
-        if "branch" in q:
-            filter_["branch"] = q["branch"]
-        if "workflow" in q:
-            filter_["attributes.workflow"] = q["workflow"]
-        if "runner" in q:
-            filter_["attributes.runner"] = q["runner"]
-        if "test_name" in q:
-            filter_["attributes.test_name"] = q["test_name"]
+        _apply_facet_filters(filter_, q)
         hits = list(runs.find(filter_))
-        facets_out: dict = {}
-        for name, extract in _FACET_FIELDS:
-            vals = set()
-            for d in hits:
-                v = extract(d)
-                if v:
-                    vals.add(v)
-            if vals:
-                facets_out[name] = sorted(vals)
-        # Timestamp span.
+        dim_values: dict[str, set] = {}
+
+        def _bump(key, val):
+            if val is None or val == "":
+                return
+            dim_values.setdefault(key, set()).add(val)
+
+        for d in hits:
+            test = d.get("test") or {}
+            run = d.get("run") or {}
+            commit = d.get("commit") or {}
+            _bump("test_name", test.get("test_name"))
+            _bump("branch",    commit.get("ref"))
+            _bump("runner",    run.get("runner"))
+            _bump("workflow",  run.get("workflow"))
+            # Free-form parameters the parser extracted (threads,
+            # args, clients, vus, …) — any key under ``test.params``
+            # is a candidate facet, and the filter path is built
+            # symmetrically in ``_filter_path``.
+            for k, v in (test.get("params") or {}).items():
+                _bump(k, v)
+            # Metric is list-valued: surface its names.
+            for m in d.get("metrics") or []:
+                _bump("metric", m.get("name"))
+
+        facets_out = {
+            k: sorted(dim_values[k], key=_natural_key)
+            for k in sorted(dim_values)
+        }
+
+        # Timestamp span — commit time is the authoritative ordering
+        # signal, stored as an epoch int under ``commit.commit_time``.
+        # Convert to ISO-friendly ``{min, max}`` datetimes for the UI.
         tmin = tmax = None
         for d in hits:
-            t = d.get("timestamp")
-            if t is None:
+            t = (d.get("commit") or {}).get("commit_time")
+            if not isinstance(t, (int, float)):
                 continue
             if tmin is None or t < tmin: tmin = t
             if tmax is None or t > tmax: tmax = t
         span = None
         if tmin is not None:
-            span = {"min": tmin, "max": tmax}
+            span = {
+                "min": datetime.datetime.fromtimestamp(tmin, tz=UTC),
+                "max": datetime.datetime.fromtimestamp(tmax, tz=UTC),
+            }
         return Document(
             facets=facets_out,
             varying=[k for k, v in facets_out.items() if len(v) > 1],

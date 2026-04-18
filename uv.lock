@@ -123,6 +123,7 @@ dependencies = [
     { name = "extjson" },
     { name = "jsonee" },
     { name = "purejson" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -130,7 +131,6 @@ dev = [
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -142,7 +142,7 @@ requires-dist = [
     { name = "purejson", git = "https://github.com/nyrkio/purejson?branch=main" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "uvicorn", marker = "extra == 'dev'" },
+    { name = "uvicorn" },
 ]
 provides-extras = ["dev"]
 

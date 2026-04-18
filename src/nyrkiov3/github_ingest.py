@@ -230,9 +230,15 @@ def ingest_workflow_run(
     Returns the number of benchmark runs inserted.
 
     Parameters:
-    - ``parsers``: optional ``{workflow_filename: parser_module}`` map.
-    - ``default_parser``: used when ``parsers`` doesn't match. One of
-      ``parsers`` or ``default_parser`` must be set.
+    - ``parsers``: optional ``{workflow_filename: parser_module}`` map
+      for callers that know exactly which parser each workflow emits.
+    - ``default_parser``: explicit override used when ``parsers``
+      doesn't match. Setting this skips per-log content sniffing —
+      mainly for tests.
+    - Without either: each job's log is sniffed via
+      :mod:`benchzoo.sniff` and dispatched to the matching parser.
+      The sniff is per-job, so one workflow can legitimately run
+      gbench-json in one job and cargo-bench-text in another.
     - ``step_name``: if given, slice the log to that ``##[group]``
       region before parsing (tight-coupling the parser to just the
       benchmark step). Otherwise the parser sees the entire job log.
@@ -240,14 +246,13 @@ def ingest_workflow_run(
       jobs whose name / os doesn't match.
     """
     workflow_filename = (run.get("path") or "").split("/")[-1]
-    parser = None
+    # Config-matched and explicit-override parsers win; otherwise we
+    # sniff each job's log below.
+    pinned_parser = None
     if parsers and workflow_filename in parsers:
-        parser = parsers[workflow_filename]
+        pinned_parser = parsers[workflow_filename]
     elif default_parser is not None:
-        parser = default_parser
-    if parser is None:
-        raise ValueError(
-            f"no parser configured for workflow {workflow_filename!r}")
+        pinned_parser = default_parser
 
     sha = run.get("head_sha", "")
     try:
@@ -259,17 +264,15 @@ def ingest_workflow_run(
     commit = _commit_sub_doc(commit_info, repo=repo_id) if commit_info else {
         "sha": sha, "short_sha": sha[:7], "repo": repo_id,
     }
-
-    # Timestamp used on the stored run: canonical = commit time if we
-    # know it, else the run's created_at.
-    if "commit_time" in commit:
-        ts = _dt.datetime.fromtimestamp(commit["commit_time"], tz=_dt.timezone.utc)
-    else:
+    # If the GitHub commit API didn't give us a commit_time, fall back
+    # to the workflow-run's ``created_at`` — still a plausible ordering
+    # point when the commit metadata is unavailable.
+    if "commit_time" not in commit:
         ts_str = run.get("created_at", "").replace("Z", "+00:00")
         try:
-            ts = _dt.datetime.fromisoformat(ts_str)
+            commit["commit_time"] = int(_dt.datetime.fromisoformat(ts_str).timestamp())
         except ValueError:
-            ts = utcnow()
+            pass
 
     jobs = client.list_jobs(owner, repo, run["id"])
     absolute = f"gh/{owner}/{repo}"
@@ -296,42 +299,58 @@ def ingest_workflow_run(
             LOG.warning("log fetch failed for job %s (%s); skipping", job["id"], e)
             continue
         sliced = slice_log(log, step_name=step_name)
+        parser = pinned_parser
+        if parser is None:
+            from benchzoo import sniff as _sniff_content
+            from benchzoo.parsers import find_parser as _find_parser
+            framework = _sniff_content(sliced)
+            if framework is None:
+                LOG.info("job %s log didn't match any known format; skipping",
+                         job["id"])
+                continue
+            try:
+                parser = _find_parser(framework)
+            except (KeyError, ValueError) as e:
+                LOG.info("job %s: no parser for framework %s (%s); skipping",
+                         job["id"], framework, e)
+                continue
         parsed = parser.parse(sliced)
         if not parsed:
             LOG.info("job %s produced no parsed runs", job["id"])
             continue
 
+        # Ensure the commit sub-doc carries the authoritative ref
+        # from the workflow run — parsers can't see that.
+        commit_with_ref = dict(commit)
+        if run.get("head_branch") and "ref" not in commit_with_ref:
+            commit_with_ref["ref"] = run["head_branch"]
+
         for entry in parsed:
-            test_name = entry.get("test", {}).get("test_name") or ""
-            metrics = entry.get("metrics", [])
-            if not test_name or not metrics:
+            test = entry.get("test") or {}
+            if not test.get("test_name") or not entry.get("metrics"):
                 continue
-            attrs = {
-                "test_name": test_name,
-                "runner": job.get("name", ""),
+            # The workflow has authoritative knowledge of the runner
+            # (job name) and workflow filename — attach them to the
+            # run's ``run`` block. Parsers don't know those things.
+            run_block = dict(entry.get("run") or {})
+            run_block["runner"] = job.get("name", "")
+            run_block["workflow"] = workflow_filename
+
+            # The benchzoo doc — every key as the parser emitted it,
+            # plus the bits the ingest layer uniquely knows
+            # (``commit``, ``run.runner``, ``run.workflow``).
+            doc = dict(entry)
+            doc["run"] = run_block
+            doc["commit"] = commit_with_ref
+            doc["repo_id"] = repo_doc["_id"]
+            doc["absolute_name"] = absolute
+            doc["source"] = {
+                "kind": "github_actions",
+                "run_id": run["id"],
+                "job_id": job["id"],
                 "workflow": workflow_filename,
             }
-            extra_info = dict(entry.get("extra_info") or {})
-            if "sut" in entry:
-                extra_info["sut"] = entry["sut"]
-            if "env" in entry:
-                extra_info["env"] = entry["env"]
-            runs_coll.insert_one(Document(
-                repo_id=repo_doc["_id"],
-                absolute_name=absolute,
-                branch=run.get("head_branch", "main"),
-                git_commit=sha,
-                timestamp=ts,
-                attributes=attrs,
-                metrics=metrics,
-                commit=commit,
-                extra_info=extra_info,
-                passed=entry.get("run", {}).get("passed", True),
-                source={"kind": "github_actions",
-                        "run_id": run["id"],
-                        "job_id": job["id"],
-                        "workflow": workflow_filename},
-            ))
+            runs_coll.insert_one(Document(doc))
             inserted += 1
     return inserted
 

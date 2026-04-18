@@ -19,20 +19,46 @@ async def client(app):
         yield c
 
 
-def _benchzoo_run(test_name, value, ts=None, branch="main", commit="abc123"):
-    """Construct a benchzoo-shaped test_run payload."""
+def _bz_run(test_name, value, *, commit_time=None, ref="main",
+            sha="abc123", runner=None, workflow=None, params=None,
+            metric_name="latency", unit="ms", passed=True):
+    """Construct a benchzoo-shaped test_run the ingest endpoint accepts.
+
+    Matches the shape every benchzoo parser emits: nested ``test`` /
+    ``run`` / ``metrics`` / ``commit``. No top-level ``branch`` /
+    ``git_commit`` / ``timestamp`` / ``attributes`` — those are the
+    old flat fields that no longer exist.
+    """
+    if commit_time is None:
+        commit_time = int(
+            datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc).timestamp()
+        )
+    elif isinstance(commit_time, datetime.datetime):
+        commit_time = int(commit_time.timestamp())
+    test_block = {"test_name": test_name}
+    if params:
+        test_block["params"] = params
+    run_block = {"passed": passed}
+    if runner:
+        run_block["runner"] = runner
+    if workflow:
+        run_block["workflow"] = workflow
     return {
-        "branch": branch,
-        "git_commit": commit,
-        "timestamp": (ts or datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)).isoformat(),
-        "attributes": {"test_name": test_name},
-        "metrics": [{"name": "latency", "unit": "ms", "value": value}],
-        "passed": True,
+        "test": test_block,
+        "run": run_block,
+        "env": {"framework": {"name": "test"}},
+        "metrics": [{"name": metric_name, "unit": unit, "value": value}],
+        "commit": {
+            "sha": sha,
+            "short_sha": sha[:7],
+            "ref": ref,
+            "commit_time": commit_time,
+        },
     }
 
 
 async def test_ingest_inserts_and_creates_repo(client, app):
-    payload = {"runs": [_benchzoo_run("tpch_q1", 42.1)]}
+    payload = {"runs": [_bz_run("tpch_q1", 42.1)]}
     r = await client.post("/api/v3/ingest/gh/demo/bench", json=payload)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -46,13 +72,13 @@ async def test_ingest_inserts_and_creates_repo(client, app):
 
 
 async def test_ingest_then_list(client):
-    payload = {
-        "runs": [
-            _benchzoo_run("tpch_q1", 42.1, datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)),
-            _benchzoo_run("tpch_q1", 43.7, datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)),
-            _benchzoo_run("tpch_q2", 17.0, datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)),
-        ]
-    }
+    d1 = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    d2 = datetime.datetime(2026, 1, 2, tzinfo=datetime.timezone.utc)
+    payload = {"runs": [
+        _bz_run("tpch_q1", 42.1, commit_time=d1, sha="s1"),
+        _bz_run("tpch_q1", 43.7, commit_time=d2, sha="s2"),
+        _bz_run("tpch_q2", 17.0, commit_time=d1, sha="s3"),
+    ]}
     r = await client.post("/api/v3/ingest/gh/demo/bench", json=payload)
     assert r.status_code == 200
 
@@ -63,27 +89,23 @@ async def test_ingest_then_list(client):
 
 
 async def test_list_filters_by_test_name(client):
-    payload = {
-        "runs": [
-            _benchzoo_run("tpch_q1", 42.1),
-            _benchzoo_run("tpch_q2", 17.0),
-        ]
-    }
+    payload = {"runs": [
+        _bz_run("tpch_q1", 42.1, sha="s1"),
+        _bz_run("tpch_q2", 17.0, sha="s2"),
+    ]}
     await client.post("/api/v3/ingest/gh/demo/bench", json=payload)
     r = await client.get("/api/v3/tests/gh/demo/bench?test_name=tpch_q2")
     results = r.json()
     assert len(results) == 1
-    assert results[0]["attributes"]["test_name"] == "tpch_q2"
+    assert results[0]["test"]["test_name"] == "tpch_q2"
 
 
 async def test_list_time_range(client):
-    payload = {
-        "runs": [
-            _benchzoo_run("t", 1, datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)),
-            _benchzoo_run("t", 2, datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc)),
-            _benchzoo_run("t", 3, datetime.datetime(2026, 3, 1, tzinfo=datetime.timezone.utc)),
-        ]
-    }
+    payload = {"runs": [
+        _bz_run("t", 1, commit_time=datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc), sha="s1"),
+        _bz_run("t", 2, commit_time=datetime.datetime(2026, 2, 1, tzinfo=datetime.timezone.utc), sha="s2"),
+        _bz_run("t", 3, commit_time=datetime.datetime(2026, 3, 1, tzinfo=datetime.timezone.utc), sha="s3"),
+    ]}
     await client.post("/api/v3/ingest/gh/demo/bench", json=payload)
     r = await client.get("/api/v3/tests/gh/demo/bench?since=2026-01-15T00:00:00&until=2026-02-15T00:00:00")
     results = r.json()
@@ -92,7 +114,7 @@ async def test_list_time_range(client):
 
 
 async def test_list_narrows_metric(client):
-    run = _benchzoo_run("t", 1)
+    run = _bz_run("t", 1)
     run["metrics"] = [
         {"name": "latency", "unit": "ms", "value": 10},
         {"name": "throughput", "unit": "ops/s", "value": 500},
@@ -103,6 +125,22 @@ async def test_list_narrows_metric(client):
     assert len(results) == 1
     assert len(results[0]["metrics"]) == 1
     assert results[0]["metrics"][0]["name"] == "throughput"
+
+
+async def test_list_narrows_metric_multi(client):
+    """Multi-valued ``?metric=`` selects a subset of each run's metrics."""
+    run = _bz_run("t", 1)
+    run["metrics"] = [
+        {"name": "latency", "unit": "ms", "value": 10},
+        {"name": "throughput", "unit": "ops/s", "value": 500},
+        {"name": "errors", "unit": "count", "value": 3},
+    ]
+    await client.post("/api/v3/ingest/gh/demo/bench", json={"runs": [run]})
+    r = await client.get("/api/v3/tests/gh/demo/bench?metric=latency&metric=errors")
+    results = r.json()
+    assert len(results) == 1
+    names = {m["name"] for m in results[0]["metrics"]}
+    assert names == {"latency", "errors"}
 
 
 async def test_unknown_route_404(client):
@@ -119,7 +157,15 @@ async def test_ingest_schema_validation_rejects_bad_payload(client):
 
 
 async def test_ingest_schema_validation_rejects_run_without_metrics(client):
-    bad = {"runs": [{"attributes": {"test_name": "x"}}]}  # no "metrics" array
+    # No "metrics" — required by IngestRun schema.
+    bad = {"runs": [{"test": {"test_name": "x"}}]}
+    r = await client.post("/api/v3/ingest/gh/demo/bench", json=bad)
+    assert r.status_code == 400
+
+
+async def test_ingest_schema_validation_rejects_run_without_test(client):
+    # No "test" — required by IngestRun schema.
+    bad = {"runs": [{"metrics": [{"name": "m", "value": 1}]}]}
     r = await client.post("/api/v3/ingest/gh/demo/bench", json=bad)
     assert r.status_code == 400
 
@@ -138,32 +184,14 @@ async def test_middleware_event_fires():
     assert seen == ["/api/v3/tests/gh/demo/bench"]
 
 
-async def test_ingest_rejects_naive_iso_timestamp(client):
-    """Naive ISO strings should fail loudly — no silent UTC promotion."""
-    bad = {
-        "runs": [{
-            "attributes": {"test_name": "x"},
-            "timestamp": "2026-01-01T12:00:00",  # no Z, no offset
-            "metrics": [{"name": "m", "value": 1.0}],
-        }]
-    }
-    r = await client.post("/api/v3/ingest/gh/demo/bench", json=bad)
-    assert r.status_code == 500
-    assert "naive datetime" in r.json()["error"].lower() or "tzinfo" in r.json()["error"].lower() or "timezone" in r.json()["error"].lower()
-
-
 async def test_benchzoo_shaped_end_to_end(client):
-    """End-to-end exercise matching what benchzoo parsers actually emit."""
-    runs = []
-    for day in range(1, 6):
-        runs.append({
-            "attributes": {"test_name": "sleep_bench"},
-            "timestamp": datetime.datetime(2026, 1, day, tzinfo=datetime.timezone.utc).isoformat(),
-            "metrics": [{"name": "wall_time", "unit": "s", "value": 2.15 + day * 0.01}],
-            "branch": "main",
-            "git_commit": f"commit_{day}",
-            "passed": True,
-        })
+    """Five rows on consecutive days; verify ordering on ``commit.commit_time``."""
+    runs = [
+        _bz_run("sleep_bench", 2.15 + day * 0.01,
+                commit_time=datetime.datetime(2026, 1, day, tzinfo=datetime.timezone.utc),
+                sha=f"sha_{day}", unit="s", metric_name="wall_time")
+        for day in range(1, 6)
+    ]
     r = await client.post("/api/v3/ingest/gh/turso/turso", json={"runs": runs})
     assert r.status_code == 200
     assert r.json()["inserted"] == 5
@@ -171,49 +199,40 @@ async def test_benchzoo_shaped_end_to_end(client):
     r = await client.get("/api/v3/tests/gh/turso/turso?test_name=sleep_bench&metric=wall_time")
     data = r.json()
     assert len(data) == 5
-    # Sorted by timestamp ascending.
+    # Sorted by commit time ascending → values come out monotonically increasing.
     values = [d["metrics"][0]["value"] for d in data]
     assert values == sorted(values)
 
 
 async def test_facets_returns_varying_and_timestamp_span(client):
-    # Ingest three runs on two different runners so the `runner` facet
-    # varies; `branch` stays on "main" (single value).
+    # Three runs on two runners; branch constant, runner varies.
     for runner, value in [("intel", 1.0), ("intel", 1.1), ("arm", 2.0)]:
-        r = await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [{
-            "branch": "main",
-            "git_commit": f"sha-{runner}-{value}",
-            "timestamp": f"2026-01-0{int(value*10) % 9 + 1}T12:00:00+00:00",
-            "attributes": {"test_name": "t1", "runner": runner, "workflow": "bench.yml"},
-            "metrics": [{"name": "latency", "unit": "ms", "value": value}],
-            "passed": True,
-        }]})
+        r = await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [
+            _bz_run("t1", value, runner=runner, workflow="bench.yml",
+                    sha=f"sha-{runner}-{value}",
+                    commit_time=datetime.datetime(2026, 1, int(value*10) % 9 + 1,
+                                                   12, 0, 0,
+                                                   tzinfo=datetime.timezone.utc))
+        ]})
         assert r.status_code == 200
 
     r = await client.get("/api/v3/tests/gh/foo/bar/facets")
     assert r.status_code == 200
     body = r.json()
     assert body["count"] == 3
-    # branch has 1 distinct value → in facets but not in varying.
     assert body["facets"]["branch"] == ["main"]
     assert "branch" not in body["varying"]
-    # runner varies.
     assert set(body["facets"]["runner"]) == {"intel", "arm"}
     assert "runner" in body["varying"]
-    # timestamp span present.
     assert "timestamp_span" in body and body["timestamp_span"] is not None
 
 
 async def test_facets_narrow_when_filter_applied(client):
     for runner in ("intel", "arm"):
-        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [{
-            "branch": "main", "git_commit": "s",
-            "timestamp": "2026-01-01T00:00:00+00:00",
-            "attributes": {"test_name": "t", "runner": runner},
-            "metrics": [{"name": "l", "value": 1}],
-            "passed": True,
-        }]})
-    # With runner=intel filter, that's the only distinct value → not varying.
+        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [
+            _bz_run("t", 1, runner=runner, sha=f"s-{runner}")
+        ]})
+    # With runner=intel filter, only that value remains.
     r = await client.get("/api/v3/tests/gh/foo/bar/facets?runner=intel")
     body = r.json()
     assert body["facets"]["runner"] == ["intel"]
@@ -222,14 +241,55 @@ async def test_facets_narrow_when_filter_applied(client):
 
 async def test_list_filters_on_runner(client):
     for runner in ("intel", "arm"):
-        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [{
-            "branch": "main", "git_commit": "s",
-            "timestamp": "2026-01-01T00:00:00+00:00",
-            "attributes": {"test_name": "t", "runner": runner},
-            "metrics": [{"name": "l", "value": 1}],
-            "passed": True,
-        }]})
+        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [
+            _bz_run("t", 1, runner=runner, sha=f"s-{runner}")
+        ]})
     r = await client.get("/api/v3/tests/gh/foo/bar?runner=arm")
     body = r.json()
     assert len(body) == 1
-    assert body[0]["attributes"]["runner"] == "arm"
+    assert body[0]["run"]["runner"] == "arm"
+
+
+async def test_facets_surfaces_test_params(client):
+    """``test.params`` keys show up as facets — this is how gbench
+    ``/N`` args / thread counts become filter dimensions."""
+    for size in (64, 512, 4096):
+        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [
+            _bz_run("scan", 1.0, params={"args": str(size)},
+                    sha=f"s-{size}")
+        ]})
+    r = await client.get("/api/v3/tests/gh/foo/bar/facets")
+    body = r.json()
+    assert "args" in body["facets"]
+    assert set(body["facets"]["args"]) == {"64", "512", "4096"}
+    assert "args" in body["varying"]
+
+
+async def test_list_filters_on_test_params(client):
+    for size in (64, 512, 4096):
+        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [
+            _bz_run("scan", 1.0, params={"args": str(size)},
+                    sha=f"s-{size}")
+        ]})
+    # Multi-select via repeated params — real-world case for gbench arg ranges.
+    r = await client.get("/api/v3/tests/gh/foo/bar?args=64&args=4096")
+    body = r.json()
+    assert len(body) == 2
+    assert {d["test"]["params"]["args"] for d in body} == {"64", "4096"}
+
+
+async def test_filter_value_containing_commas(client):
+    """Runner names from GitHub Actions legitimately contain commas
+    (``"benchmark (Linux ARM64, ubuntu-24.04-arm, arm64)"``). Repeated
+    query params must preserve the comma as content, not a separator."""
+    nasty = "benchmark (Linux ARM64, ubuntu-24.04-arm, arm64)"
+    clean = "benchmark (Linux Intel, nyrkio_8, x64)"
+    for r in (nasty, clean):
+        await client.post("/api/v3/ingest/gh/foo/bar", json={"runs": [
+            _bz_run("t", 1, runner=r, sha=f"s-{r[:4]}")
+        ]})
+    resp = await client.get("/api/v3/tests/gh/foo/bar",
+                            params=[("runner", nasty)])
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["run"]["runner"] == nasty

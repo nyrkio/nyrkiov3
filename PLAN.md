@@ -1,6 +1,6 @@
 # nyrkiov3 — PLAN
 
-The application: analytics + change detection. Built on PureJson / ExtendedJsonSchema / JsonEE / ImplicitOpenApi / kuutar. Receives data from nyrkio-runner.
+The application: analytics + change detection. Built on PureJson / ExtendedJsonSchema / JsonEE / ImplicitOpenApi / AuroraBorealis. Receives data from nyrkio-runner.
 
 ## Domain model
 
@@ -21,13 +21,13 @@ Result: master plan said this kills 2^4 complexity. Verify by listing every exis
 
 ## Change detection
 - Apache Otava (latest) under the hood.
-- Default `p ≈ 0.0001`, `threshold = 0`, `window_size` likely gone. Validate against the public dataset before defaulting.
+- Default `p ≈ 0.01`, `threshold = 0`, `window_size` likely gone. Validate against the public dataset before defaulting.
 - Per-graph and per-project thumbs-up / thumbs-down feedback drives `p` adjustment over time.
 - Onboarding question: "false alarms or missed regressions?" → initial p choice.
 
 ## Datasets / bootstrap
 - Pull `nyrkio.com/public` datasets into the v3 DocumentDB.
-- Use as the prototyping corpus for kuutar and as regression-test fixtures for change detection.
+- Use as the prototyping corpus for AuroraBorealis and as regression-test fixtures for change detection.
 
 ## Site / docs separation
 - Marketing/docs site is **separate** from the app.
@@ -51,7 +51,7 @@ Recommend FerretDB for v1 (operational maturity), with the PureJson DocumentDB a
 ## Frontend framework
 Two viable paths, decision deferred to implementation kickoff:
 
-1. **htmx + Bootstrap** for the app shell (server-rendered HTML fragments, no build step, no SPA), with Svelte (or a vanilla three.js wrapper class) just around the kuutar canvas. Fewest moving parts; closest to the master plan's "maybe no framework at all" instinct. Good fit if JsonEE comfortably renders HTML alongside JSON.
+1. **htmx + Bootstrap** for the app shell (server-rendered HTML fragments, no build step, no SPA), with Svelte (or a vanilla three.js wrapper class) just around the AuroraBorealis canvas. Fewest moving parts; closest to the master plan's "maybe no framework at all" instinct. Good fit if JsonEE comfortably renders HTML alongside JSON.
 2. **Svelte** for the whole frontend. More uniform, more familiar to frontend devs, larger client bundle.
 
 Either way: ship a **proper client library** for the backend API (the v2 ad-hoc `fetch()` calls were called out as a smell). Generate it from the OpenAPI doc emitted by ImplicitOpenApi — closes the loop.

@@ -238,27 +238,47 @@
        that to stay flush with the bar edges. */
     #time-filter .slider-labels { position: relative; height: 14px; font-size: 10px;
                                   opacity: 0.7; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
-    #time-filter .slider-labels .lbl { position: absolute; top: 0;
-                                       transform: translateX(-50%); white-space: nowrap; }
-    #time-filter .slider-labels .lbl.edge-left  { transform: none; left: 0 !important; }
-    #time-filter .slider-labels .lbl.edge-right { transform: translateX(-100%); left: 100% !important; }
-    /* Per-commit ticks above the slider — githash written vertically,
-       CP count above it when > 0. Faded by default; reveal when the
-       user hovers the time-filter area so the chrome stays clean. */
-    #time-filter .slider-ticks { position: relative; height: 64px; margin-bottom: 2px;
-                                 opacity: 0; transition: opacity 0.25s ease; pointer-events: none; }
-    #time-filter:hover .slider-ticks { opacity: 1; pointer-events: auto; }
-    #time-filter .tick { position: absolute; bottom: 0; transform: translateX(-50%);
+    #time-filter .slider-labels .lbl,
+    #time-filter .dates-above .lbl { position: absolute; top: 0;
+                                     transform: translateX(-50%); white-space: nowrap; }
+    #time-filter .slider-labels .lbl.edge-left,
+    #time-filter .dates-above .lbl.edge-left  { transform: none; left: 0 !important; }
+    #time-filter .slider-labels .lbl.edge-right,
+    #time-filter .dates-above .lbl.edge-right { transform: translateX(-100%); left: 100% !important; }
+    /* SHA ticks and date labels above the slider — revealed on hover. */
+    #time-filter .sha-ticks { position: relative; height: 80px; margin-bottom: 28px;
+                               overflow: hidden; cursor: grab;
+                               opacity: 0; transition: opacity 0.25s ease; pointer-events: none; }
+    #time-filter:hover .sha-ticks,
+    #time-filter.sha-dragging .sha-ticks { opacity: 1; pointer-events: auto; }
+    #time-filter .sha-ticks.dragging { cursor: grabbing; }
+    #time-filter .sha-inner { position: absolute; top: 0; left: 0;
+                               display: flex; flex-direction: row;
+                               height: 100%; align-items: flex-end; }
+    #time-filter .tick { width: 16px; flex-shrink: 0;
                          display: flex; flex-direction: column; align-items: center;
-                         font-size: 9px; font-family: ui-monospace, Menlo, monospace;
-                         color: #9ab; cursor: default; line-height: 1; }
+                         justify-content: flex-end;
+                         font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+                         color: #78c8ff; cursor: default; line-height: 1; user-select: none; }
     #time-filter .tick .sha { writing-mode: vertical-rl; transform: rotate(180deg);
-                              letter-spacing: 1px; }
-    #time-filter .tick .cp-count { font-size: 9px; color: #f29999; font-weight: 600;
-                                   margin-bottom: 2px; min-height: 10px; }
+                               letter-spacing: 1px; }
+    #time-filter .tick .cp-count { font-size: 10px; color: #f29999; font-weight: 600;
+                                    margin-bottom: 2px; min-height: 11px; }
     #time-filter .tick .cp-count:empty { min-height: 0; }
-    #time-filter .tick:hover { color: #fff; z-index: 2; }
-    #time-filter .tick.hidden { display: none; }
+    #time-filter .tick:hover { color: #fff; }
+    #time-filter .dates-above { position: relative; height: 14px; font-size: 10px;
+                                 color: #78c8ff; margin-bottom: 4px;
+                                 font-family: ui-monospace, Menlo, monospace;
+                                 opacity: 0; transition: opacity 0.25s ease; }
+    #time-filter:hover .dates-above,
+    #time-filter.sha-dragging .dates-above { opacity: 1; }
+    /* Blue fill between the two slider handles */
+    #time-filter .slider-fill { position: absolute; height: 4px; top: 12px;
+                                 background: #78c8ff; border-radius: 2px; pointer-events: none; }
+    /* Guide lines SVG — hidden by default, revealed with the other hover elements */
+    #time-filter #guide-lines { opacity: 0; transition: opacity 0.25s ease; }
+    #time-filter:hover #guide-lines,
+    #time-filter.sha-dragging #guide-lines { opacity: 1; }
     #filters .slider-wrap { position: relative; height: 28px; display: flex; align-items: center; }
     #filters .slider-wrap input[type="range"] {
       position: absolute; width: 100%; pointer-events: none;
@@ -286,8 +306,8 @@
                               opacity: 0.7; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
 
     #flyover {
-      position: absolute; bottom: 14px; left: 50%;
-      transform: translateX(-50%); z-index: 5;
+      position: absolute; bottom: 14px; right: 14px;
+      z-index: 5;
       display: flex; align-items: center; gap: 10px;
       padding: 8px 14px;
       color: #cdd; font-size: 12px;
@@ -343,7 +363,7 @@
       #commit-panel.open { transform: translateY(0); }
 
       /* Flyover controls sit above the bottom sheet area. */
-      #flyover { bottom: 8px; }
+      #flyover { bottom: 8px; right: 8px; }
 
       /* Hint popover: let it wrap and span full width. */
       #hint-popover { left: 10px; right: 10px; transform: none;
@@ -718,7 +738,7 @@
           // dashboard decides per data what to show by default.
           a.href = `?repo=${encodeURIComponent(short)}`;
           const runCount = d.run_count || 0;
-          const latest = d.latest && (d.latest.$date || d.latest);
+          const latest = d.latest;
           const latestDay = latest ? new Date(latest).toISOString().slice(0, 10) : "?";
           a.innerHTML = `<span class="name">${short}</span>`
             + `<span class="stats">${runCount.toLocaleString()} runs · latest ${latestDay}</span>`;
@@ -1027,7 +1047,7 @@
     const timeFilterEl = document.getElementById("time-filter");
 
     function extractTs(x) {
-      if (x && typeof x === "object" && "$date" in x) return new Date(x.$date).getTime();
+      if (x instanceof Date) return x.getTime();
       if (typeof x === "string") return new Date(x).getTime();
       return 0;
     }
@@ -1143,10 +1163,37 @@
 
     async function reload() {
       try {
-        // Facets first so the sidebar reflects the current slice.
         const facetsData = await apiFetch(facetsBase + buildQs(filters, ["since", "until"]));
+        // Pin the full commit range from the unfiltered facets scan so
+        // the slider endpoints never move when windowed re-fetches happen.
+        if (facetsData.commit_times && !_timeSliderBuilt) {
+          _commitTimes = facetsData.commit_times.map(t => t * 1000);
+        }
         renderFilters(facetsData);
-        await k.fetchAndRender(testsBase + buildQs(filters));
+        // Build windowed fetch URL. On the first load we derive the
+        // window from facets timestamp_span (3-month default window,
+        // expanded half a window back so the negative-x zone has data).
+        // On subsequent reloads (filter changes) we reuse the slider's
+        // last window so the user's position is preserved.
+        const fetchFilters = { ...filters };
+        if (_windowSinceMs !== null || _windowUntilMs !== null) {
+          if (_windowSinceMs !== null)
+            fetchFilters.since = new Date(_windowSinceMs).toISOString();
+          if (_windowUntilMs !== null)
+            fetchFilters.until = new Date(_windowUntilMs).toISOString();
+        } else {
+          const span = facetsData?.timestamp_span;
+          if (span) {
+            const untilMs = span.max instanceof Date ? span.max.getTime() : new Date(span.max).getTime();
+            const sinceMs = untilMs - 90 * 86400 * 1000; // 3 months
+            const halfWindow = (untilMs - sinceMs) / 2;
+            _windowSinceMs = sinceMs - halfWindow;
+            _windowUntilMs = untilMs;
+            fetchFilters.since = new Date(_windowSinceMs).toISOString();
+            fetchFilters.until = new Date(_windowUntilMs).toISOString();
+          }
+        }
+        await k.fetchAndRender(testsBase + buildQs(fetchFilters));
         setupTimeSlider();
       } catch (e) {
         status.textContent = "error: " + e.message;
@@ -1162,17 +1209,15 @@
     let _timeSliderBuilt = false;
     let _sinceIdx = null;
     let _untilIdx = null;
+    let _commitTimes = null;   // all commit times from facets — fixed, never narrowed by windowed fetches
+    let _windowSinceMs = null; // last fetch window — reused by reload()
+    let _windowUntilMs = null;
     function setupTimeSlider() {
       const runs = k._lastRuns;
       if (!runs || runs.length === 0) return;
-      const uniq = new Set();
-      for (const r of runs) {
-        const t = (r.commit || {}).commit_time;
-        if (typeof t === "number") uniq.add(t * 1000);
-      }
-      const commitTimes = [...uniq].sort((a, b) => a - b);
+      if (!_commitTimes || _commitTimes.length < 2) return;
+      const commitTimes = _commitTimes;
       const N = commitTimes.length;
-      if (N < 2) return;
 
       // Default primary = min(3 months, last 300 commits) — whichever
       // gives fewer commits in the window (tighter range).
@@ -1188,232 +1233,329 @@
         _sinceIdx = defaultSinceIdx;
         _untilIdx = N - 1;
         timeFilterEl.style.display = "block";
-        // Build a commit → {sha, author, message} index and a CP
-        // count per commit ts. These feed the per-tick labels above
-        // the slider (githash vertical, CP badge above if >0).
-        const commitMeta = new Map();  // ts -> {sha, author, message}
-        for (const r of runs) {
-          const c = r.commit || {};
-          if (typeof c.commit_time !== "number") continue;
-          const t = c.commit_time * 1000;
-          if (commitMeta.has(t)) continue;
-          const rawSha = c.short_sha || c.sha || "";
-          commitMeta.set(t, {
-            sha: rawSha.slice(0, 7),
-            author: c.author || "",
-            message: c.message || c.subject || "",
-          });
-        }
-        // CP count per commit — aurora exposes _changePoints with
-        // global commit-idx after a render. We sort commitTimes
-        // identically so `idx` maps 1:1.
-        const cpCountByIdx = new Map();
-        for (const cp of (k._changePoints || [])) {
-          cpCountByIdx.set(cp.idx, (cpCountByIdx.get(cp.idx) || 0) + 1);
-        }
-        // All N ticks exist in the DOM; visibility is toggled on
-        // mousemove. A fisheye around the pointer relaxes the min
-        // spacing so nearby commits crowd in, while far-from-pointer
-        // commits stay decimated. CP commits are always visible.
-        let ticksHtml = '<div class="slider-ticks" id="slider-ticks">';
-        const pctAt = (i) => (N > 1 ? (i / (N - 1)) * 100 : 50);
-        for (let i = 0; i < N; i++) {
-          const pct = pctAt(i);
-          const m = commitMeta.get(commitTimes[i]) || { sha: "", author: "", message: "" };
-          const cpN = cpCountByIdx.get(i) || 0;
-          const isCp = cpN > 0;
-          const title = [m.sha, m.author, m.message].filter(Boolean).join(" · ");
-          ticksHtml += `<div class="tick${isCp ? ' cp' : ''}" data-idx="${i}"`
-            + ` style="left:${pct}%" title="${title.replace(/"/g, "&quot;")}">`
-            + `<span class="cp-count">${cpN ? cpN : ""}</span>`
-            + `<span class="sha">${m.sha}</span>`
-            + `</div>`;
-        }
-        ticksHtml += '</div>';
-        // Fixed date markers. Four base anchors:
-        //   - left edge (oldest)
-        //   - symmetric = (N−1 − defaultSinceIdx), mirroring the
-        //     default-since offset around the midpoint
-        //   - defaultSinceIdx (where the left handle starts)
-        //   - right edge (newest)
-        //
-        // Then cascade additional markers at the same step inward
-        // from both ends until they meet in the middle — but only
-        // when default-since has a long tail behind it. Specifically
-        // when the time offset from the oldest commit to default-
-        // since covers at least 75% of the total timeline — i.e.
-        // the primary window is a small recent slice and there's
-        // a long past to fill with evenly-spaced labels. On repos
-        // where default-since already sits near the start, step is
-        // large compared to the total and cascading would collapse.
-        const step = (N - 1) - defaultSinceIdx;
-        const symmetricIdx = step;
-        const markerIdxSet = new Set([
-          0,
-          symmetricIdx,
-          defaultSinceIdx,
-          N - 1,
-        ]);
-        const tMin = commitTimes[0];
-        const tMax = commitTimes[N - 1];
-        const tSince = commitTimes[defaultSinceIdx];
-        const totalSpan = Math.max(1, tMax - tMin);
-        const sinceOffset = tSince - tMin;
-        if (step > 0 && sinceOffset >= 0.75 * totalSpan) {
-          for (let k = 2; ; k++) {
-            const leftI  = k * step;
-            const rightI = (N - 1) - k * step;
-            if (leftI >= rightI) break;
-            markerIdxSet.add(leftI);
-            markerIdxSet.add(rightI);
-          }
-        }
-        const markerIdxs = [...markerIdxSet].sort((a, b) => a - b);
-        const pct = (i) => (N > 1 ? (i / (N - 1)) * 100 : 50);
-        const labelHtml = markerIdxs.map((i, pos) => {
+
+        const truePctAt = (i) => (N > 1 ? (i / (N - 1)) * 100 : 50);
+
+        // Date label positions — evenly-spaced commit indices.
+        const sliderWidth = timeFilterEl.offsetWidth || 800;
+        const TARGET_LABELS = Math.max(3, Math.min(10, Math.floor(sliderWidth / 120)));
+        const markerIdxs = Array.from({ length: TARGET_LABELS },
+          (_, j) => Math.round(j * (N - 1) / (TARGET_LABELS - 1)));
+
+        const belowLabels = markerIdxs.map((i, pos) => {
           const cls = pos === 0 ? "lbl edge-left"
                     : pos === markerIdxs.length - 1 ? "lbl edge-right"
                     : "lbl";
-          return `<span class="${cls}" style="left:${pct(i)}%">`
-               + `${fmtDay(commitTimes[i])}</span>`;
+          return `<span class="${cls}" style="left:${truePctAt(i).toFixed(2)}%">${fmtDay(commitTimes[i])}</span>`;
         }).join("");
+
         timeFilterEl.innerHTML = `
-          ${ticksHtml}
+          <svg id="guide-lines" style="position:absolute;top:0;left:0;width:100%;height:100%;overflow:visible;pointer-events:none;z-index:1;">
+            <line id="guide-left"  stroke="#78c8ff" stroke-width="1.5" stroke-opacity="0.6"/>
+            <line id="guide-right" stroke="#78c8ff" stroke-width="1.5" stroke-opacity="0.6"/>
+            <line id="sha-guide-left"  stroke="#78c8ff" stroke-width="1.5" stroke-opacity="0.6"/>
+            <line id="sha-guide-right" stroke="#78c8ff" stroke-width="1.5" stroke-opacity="0.6"/>
+            <line id="sha-connector"   stroke="#78c8ff" stroke-width="1.5" stroke-opacity="0.6"/>
+          </svg>
+          <div class="sha-ticks" id="sha-ticks"></div>
+          <div class="dates-above" id="dates-above"></div>
           <div class="slider-wrap">
+            <div class="slider-fill" id="slider-fill"></div>
             <input id="f-since" type="range" min="0" max="${N - 1}" step="1" value="${_sinceIdx}">
             <input id="f-until" type="range" min="0" max="${N - 1}" step="1" value="${_untilIdx}">
           </div>
-          <div class="slider-labels">${labelHtml}</div>
+          <div class="slider-labels">${belowLabels}</div>
         `;
-        const sinceEl = timeFilterEl.querySelector("#f-since");
-        const untilEl = timeFilterEl.querySelector("#f-until");
+
+        const sinceEl   = timeFilterEl.querySelector("#f-since");
+        const untilEl   = timeFilterEl.querySelector("#f-until");
+        const shaTicksEl  = timeFilterEl.querySelector("#sha-ticks");
+        const datesAboveEl = timeFilterEl.querySelector("#dates-above");
+        const fillEl    = timeFilterEl.querySelector("#slider-fill");
+        const wrapEl    = timeFilterEl.querySelector(".slider-wrap");
+        const guideLeftEl     = timeFilterEl.querySelector("#guide-left");
+        const guideRightEl    = timeFilterEl.querySelector("#guide-right");
+        const shaGuideLeftEl   = timeFilterEl.querySelector("#sha-guide-left");
+        const shaGuideRightEl  = timeFilterEl.querySelector("#sha-guide-right");
+        const shaConnectorEl   = timeFilterEl.querySelector("#sha-connector");
+
+        // Commit metadata — rebuilt from k._lastRuns on each windowed fetch.
+        let metaMap = new Map();   // ms-timestamp → {sha, author, message}
+        let cpByGlobal = new Map(); // global-idx → CP count
+
+        // Map a commit index within [_sinceIdx, _untilIdx] to 0–100%.
+        const windowPct = (i) => _untilIdx > _sinceIdx
+          ? (i - _sinceIdx) / (_untilIdx - _sinceIdx) * 100
+          : 50;
+
+        const SHA_W = 16; // px per SHA column in the scrollable strip
+        let shaScrollOffset = 0;
+        let shaTotalW = 0;
+
+        const updateShaGuideLines = () => {
+          const inner = shaTicksEl.querySelector(".sha-inner");
+          const tfRect    = timeFilterEl.getBoundingClientRect();
+          const shaRect   = shaTicksEl.getBoundingClientRect();
+          const datesRect = datesAboveEl.getBoundingClientRect();
+          if (!tfRect.width || !datesRect.width || !inner) return;
+          const ox = tfRect.left, oy = tfRect.top;
+          const ticks = [...inner.querySelectorAll(".tick")];
+          if (!ticks.length) return;
+          let firstVis = null, lastVis = null;
+          for (const tick of ticks) {
+            const r = tick.getBoundingClientRect();
+            const cx = (r.left + r.right) / 2;
+            if (cx >= shaRect.left - 1 && cx <= shaRect.right + 1) {
+              if (!firstVis) firstVis = { tick, r };
+              lastVis = { tick, r };
+            }
+          }
+          if (!firstVis) return;
+          const datesTopY  = datesRect.top  - oy;
+          const datesW     = datesRect.width;
+          const datesLeft  = datesRect.left - ox;
+          // Bottom-left corner of first visible SHA, bottom-right of last.
+          const fShaX = firstVis.r.left  - ox;
+          const fShaY = firstVis.r.bottom - oy;
+          const lShaX = lastVis.r.right  - ox;
+          const lShaY = lastVis.r.bottom - oy;
+          const fDateX = datesLeft + windowPct(+firstVis.tick.dataset.idx) / 100 * datesW;
+          const lDateX = datesLeft + windowPct(+lastVis.tick.dataset.idx)  / 100 * datesW;
+          const GAP = 6;
+          shaGuideLeftEl.setAttribute("x1",  fShaX.toFixed(1));
+          shaGuideLeftEl.setAttribute("y1",  (fShaY + GAP).toFixed(1));
+          shaGuideLeftEl.setAttribute("x2",  fDateX.toFixed(1));
+          shaGuideLeftEl.setAttribute("y2",  (datesTopY - GAP).toFixed(1));
+          shaGuideRightEl.setAttribute("x1", lShaX.toFixed(1));
+          shaGuideRightEl.setAttribute("y1", (lShaY + GAP).toFixed(1));
+          shaGuideRightEl.setAttribute("x2", lDateX.toFixed(1));
+          shaGuideRightEl.setAttribute("y2", (datesTopY - GAP).toFixed(1));
+          // Horizontal connector at the date end — completes the frame.
+          shaConnectorEl.setAttribute("x1", fDateX.toFixed(1));
+          shaConnectorEl.setAttribute("y1", (datesTopY - GAP).toFixed(1));
+          shaConnectorEl.setAttribute("x2", lDateX.toFixed(1));
+          shaConnectorEl.setAttribute("y2", (datesTopY - GAP).toFixed(1));
+        };
+
+        const buildShaTicks = () => {
+          const commits = [];
+          for (let i = _sinceIdx; i <= _untilIdx; i++) {
+            const m = metaMap.get(commitTimes[i]);
+            if (!m || !m.sha) continue;
+            commits.push({ i, m });
+          }
+          shaTotalW = commits.length * SHA_W;
+          const inner = document.createElement("div");
+          inner.className = "sha-inner";
+          inner.style.width = shaTotalW + "px";
+          for (const { i, m } of commits) {
+            const cpN = cpByGlobal.get(i) || 0;
+            const title = [m.sha, m.author, m.message].filter(Boolean).join(" · ");
+            const tick = document.createElement("div");
+            tick.className = "tick";
+            tick.dataset.idx = String(i);
+            tick.title = title;
+            const cpSpan = document.createElement("span");
+            cpSpan.className = "cp-count";
+            cpSpan.textContent = cpN || "";
+            const shaSpan = document.createElement("span");
+            shaSpan.className = "sha";
+            shaSpan.textContent = m.sha;
+            tick.appendChild(cpSpan);
+            tick.appendChild(shaSpan);
+            inner.appendChild(tick);
+          }
+          shaTicksEl.innerHTML = "";
+          shaTicksEl.appendChild(inner);
+          // Default: rightmost SHA flush with the right edge.
+          const visibleW = shaTicksEl.clientWidth;
+          shaScrollOffset = Math.min(0, visibleW - shaTotalW);
+          inner.style.transform = `translateX(${shaScrollOffset}px)`;
+          requestAnimationFrame(updateShaGuideLines);
+        };
+
+        // SHA strip drag / pan.
+        let _shaDragActive = false, _shaDragStartX = 0, _shaDragStartOff = 0;
+
+        const applyShaScroll = (newOff) => {
+          const inner = shaTicksEl.querySelector(".sha-inner");
+          if (!inner) return;
+          const visibleW = shaTicksEl.clientWidth;
+          shaScrollOffset = Math.max(Math.min(0, visibleW - shaTotalW), Math.min(0, newOff));
+          inner.style.transform = `translateX(${shaScrollOffset}px)`;
+          requestAnimationFrame(updateShaGuideLines);
+        };
+
+        shaTicksEl.addEventListener("mousedown", (e) => {
+          _shaDragActive   = true;
+          _shaDragStartX   = e.clientX;
+          _shaDragStartOff = shaScrollOffset;
+          shaTicksEl.classList.add("dragging");
+          timeFilterEl.classList.add("sha-dragging");
+          e.preventDefault();
+        });
+        document.addEventListener("mousemove", (e) => {
+          if (!_shaDragActive) return;
+          applyShaScroll(_shaDragStartOff + (e.clientX - _shaDragStartX));
+        });
+        document.addEventListener("mouseup", () => {
+          if (!_shaDragActive) return;
+          _shaDragActive = false;
+          shaTicksEl.classList.remove("dragging");
+          timeFilterEl.classList.remove("sha-dragging");
+        });
+        shaTicksEl.addEventListener("touchstart", (e) => {
+          _shaDragStartX   = e.touches[0].clientX;
+          _shaDragStartOff = shaScrollOffset;
+          timeFilterEl.classList.add("sha-dragging");
+        }, { passive: true });
+        shaTicksEl.addEventListener("touchmove", (e) => {
+          applyShaScroll(_shaDragStartOff + (e.touches[0].clientX - _shaDragStartX));
+        }, { passive: true });
+        shaTicksEl.addEventListener("touchend", () => {
+          timeFilterEl.classList.remove("sha-dragging");
+        }, { passive: true });
+
+        const buildDatesAbove = () => {
+          const si = +sinceEl.value;
+          const ui = +untilEl.value;
+          // Sample TARGET_LABELS evenly from within [si, ui], stretched to 0–100%.
+          const aboveMarkers = Array.from({ length: TARGET_LABELS },
+            (_, j) => Math.round(si + j * (ui - si) / (TARGET_LABELS - 1)));
+          datesAboveEl.innerHTML = aboveMarkers.map((i, pos) => {
+            const pct = pos / (TARGET_LABELS - 1) * 100;
+            const cls = pos === 0 ? "lbl edge-left"
+                      : pos === aboveMarkers.length - 1 ? "lbl edge-right"
+                      : "lbl";
+            return `<span class="${cls}" style="left:${pct.toFixed(2)}%">${fmtDay(commitTimes[i])}</span>`;
+          }).join("");
+        };
+
+        const updateGuideLines = () => {
+          const s = +sinceEl.value / (N - 1) * 100;
+          const u = +untilEl.value / (N - 1) * 100;
+          const tfRect   = timeFilterEl.getBoundingClientRect();
+          const wrapRect = wrapEl.getBoundingClientRect();
+          const firstLbl = datesAboveEl.querySelector(".lbl.edge-left");
+          const lastLbl  = datesAboveEl.querySelector(".lbl.edge-right");
+          if (!tfRect.width || !firstLbl || !lastLbl) return;
+          const ox = tfRect.left;
+          const oy = tfRect.top;
+          const trackY = (wrapRect.top - oy) + 12;
+          const sX = (wrapRect.left - ox) + s / 100 * wrapRect.width;
+          const uX = (wrapRect.left - ox) + u / 100 * wrapRect.width;
+          const lR = firstLbl.getBoundingClientRect();
+          const rR = lastLbl.getBoundingClientRect();
+          // Bottom-left corner of first label → left handle
+          guideLeftEl.setAttribute("x1", sX.toFixed(1));
+          guideLeftEl.setAttribute("y1", trackY.toFixed(1));
+          guideLeftEl.setAttribute("x2", (lR.left   - ox).toFixed(1));
+          guideLeftEl.setAttribute("y2", (lR.bottom - oy).toFixed(1));
+          // Bottom-right corner of last label → right handle
+          guideRightEl.setAttribute("x1", uX.toFixed(1));
+          guideRightEl.setAttribute("y1", trackY.toFixed(1));
+          guideRightEl.setAttribute("x2", (rR.right  - ox).toFixed(1));
+          guideRightEl.setAttribute("y2", (rR.bottom - oy).toFixed(1));
+        };
+
+        const updateFill = () => {
+          const s = +sinceEl.value / (N - 1) * 100;
+          const u = +untilEl.value / (N - 1) * 100;
+          fillEl.style.left  = s.toFixed(2) + "%";
+          fillEl.style.width = (u - s).toFixed(2) + "%";
+          // Guide lines read label rects — defer one frame so dates-above
+          // has had a chance to render its updated innerHTML first.
+          requestAnimationFrame(() => { updateGuideLines(); updateShaGuideLines(); });
+        };
+
+        const refreshTickMeta = () => {
+          metaMap = new Map();
+          for (const r of (k._lastRuns || [])) {
+            const c = r.commit || {};
+            if (typeof c.commit_time !== "number") continue;
+            const t = c.commit_time * 1000;
+            if (metaMap.has(t)) continue;
+            const rawSha = c.short_sha || c.sha || "";
+            metaMap.set(t, {
+              sha: rawSha.slice(0, 7),
+              author: c.author || "",
+              message: c.message || c.subject || "",
+            });
+          }
+          // Map windowed CP indices → global commitTimes indices.
+          const windowedTimes = [...new Set(
+            (k._lastRuns || [])
+              .map(r => typeof (r.commit || {}).commit_time === "number"
+                   ? r.commit.commit_time * 1000 : null)
+              .filter(t => t !== null)
+          )].sort((a, b) => a - b);
+          const tsToGlobalIdx = new Map(commitTimes.map((t, i) => [t, i]));
+          cpByGlobal = new Map();
+          for (const cp of (k._changePoints || [])) {
+            const ts = windowedTimes[cp.idx];
+            if (ts === undefined) continue;
+            const gi = tsToGlobalIdx.get(ts);
+            if (gi === undefined) continue;
+            cpByGlobal.set(gi, (cpByGlobal.get(gi) || 0) + 1);
+          }
+          buildShaTicks();
+        };
+
         const update = () => {
           let s = +sinceEl.value, u = +untilEl.value;
           if (s > u) {
             if (document.activeElement === sinceEl) untilEl.value = s;
             else sinceEl.value = u;
           }
+          updateFill();
+          buildDatesAbove();
         };
-        const applyWindow = () => {
+
+        const applyWindow = async (skipFetch = false) => {
           _sinceIdx = +sinceEl.value;
           _untilIdx = +untilEl.value;
-          // Pad the window by half a commit-interval on each side so
-          // boundary commits (which sit exactly on sinceIdx/untilIdx)
-          // aren't pushed off by rounding.
-          const pad = Math.max(1, commitTimes[1] - commitTimes[0]) / 2;
-          const sinceMs = (_sinceIdx > 0) ? commitTimes[_sinceIdx] - pad : null;
-          const untilMs = (_untilIdx < N - 1) ? commitTimes[_untilIdx] + pad : null;
+          const times = _commitTimes;
+          const n = times.length;
+          const pad = Math.max(1, times[1] - times[0]) / 2;
+          const sinceMs = (_sinceIdx > 0) ? times[Math.min(_sinceIdx, n-1)] - pad : null;
+          const untilMs = (_untilIdx < n - 1) ? times[Math.min(_untilIdx, n-1)] + pad : null;
+
+          if (!skipFetch) {
+            const windowMs = (untilMs ?? times[n-1]) - (sinceMs ?? times[0]);
+            _windowSinceMs = sinceMs !== null ? sinceMs - windowMs / 2 : null;
+            _windowUntilMs = untilMs;
+            const fetchFilters = { ...filters };
+            if (_windowSinceMs !== null)
+              fetchFilters.since = new Date(_windowSinceMs).toISOString();
+            if (_windowUntilMs !== null)
+              fetchFilters.until = new Date(_windowUntilMs).toISOString();
+            await k.fetchAndRender(testsBase + buildQs(fetchFilters));
+            refreshTickMeta();
+          }
+
           k.setPrimaryWindow(sinceMs, untilMs);
+          updateFill();
+          buildDatesAbove();
         };
+
         sinceEl.addEventListener("input", update);
         untilEl.addEventListener("input", update);
-        sinceEl.addEventListener("change", applyWindow);
-        untilEl.addEventListener("change", applyWindow);
-        // Apply the default window to the already-rendered scene.
-        applyWindow();
+        sinceEl.addEventListener("change", () => applyWindow().catch(e => console.error(e)));
+        untilEl.addEventListener("change", () => applyWindow().catch(e => console.error(e)));
 
-        // Fisheye tick visibility. All N tick DOM nodes exist; we
-        // show a subset depending on whether the mouse is hovering
-        // the slider area and how close each tick is to the cursor.
-        const ticksEl = timeFilterEl.querySelector(".slider-ticks");
-        const cpIdxArr = [...cpCountByIdx.keys()].sort((a, b) => a - b);
-        const allTickEls = [...ticksEl.querySelectorAll(".tick")];
-        const trackPx = () => Math.max(400, timeFilterEl.clientWidth - 32);
-        const MIN_PX = 14;             // baseline far from mouse (larger = more prune at ends)
-        const MIN_PX_NEAR = MIN_PX * 0.4;  // floor near mouse (not 0 — keeps SHAs readable)
-        const ZOOM_RADIUS = 36;        // pct; inside this the fisheye kicks in
-
-        // Mouse position along the ticks bar in percent (0..100),
-        // or null when the mouse isn't over the time-filter panel.
-        let mouseXPct = null;
-        let rafPending = false;
-
-        function recompute() {
-          rafPending = false;
-          const tpx = trackPx();
-          const minPct = (MIN_PX / tpx) * 100;
-          const minPctNear = (MIN_PX_NEAR / tpx) * 100;
-          const picked = new Array(N).fill(false);
-          // Always: CP commits + endpoints.
-          for (const i of cpIdxArr) picked[i] = true;
-          picked[0] = true;
-          picked[N - 1] = true;
-          // Iterate non-CP commits in priority order (near mouse first
-          // if a mouse position is set; otherwise left-to-right) and
-          // include them whenever the local min spacing is satisfied.
-          // Near the mouse, effective minPct tapers to 0 — so adjacent
-          // commits in the zoom window always fit.
-          const order = [];
-          for (let i = 0; i < N; i++) if (!picked[i]) order.push(i);
-          if (mouseXPct != null) {
-            order.sort((a, b) => Math.abs(pctAt(a) - mouseXPct) - Math.abs(pctAt(b) - mouseXPct));
-          }
-          // Sorted list of already-picked positions for gap checks.
-          const pickedIdx = [];
-          for (let i = 0; i < N; i++) if (picked[i]) pickedIdx.push(i);
-          const pickedPos = pickedIdx.map(pctAt);
-          const insertPos = (p) => {
-            let lo = 0, hi = pickedPos.length;
-            while (lo < hi) {
-              const m = (lo + hi) >> 1;
-              if (pickedPos[m] < p) lo = m + 1; else hi = m;
-            }
-            pickedPos.splice(lo, 0, p);
-          };
-          for (const i of order) {
-            const p = pctAt(i);
-            // Local min spacing tapers from minPctNear (at mouse) up
-            // to minPct (at ZOOM_RADIUS and beyond). Never goes to
-            // zero — SHAs must stay readable even at the focal point.
-            const dist = mouseXPct != null ? Math.abs(p - mouseXPct) : Infinity;
-            const localMin = mouseXPct != null
-              ? minPctNear + (minPct - minPctNear) * Math.min(1, dist / ZOOM_RADIUS)
-              : minPct;
-            let lo = 0, hi = pickedPos.length;
-            while (lo < hi) {
-              const m = (lo + hi) >> 1;
-              if (pickedPos[m] < p) lo = m + 1; else hi = m;
-            }
-            const left = lo > 0 ? pickedPos[lo - 1] : -Infinity;
-            const right = lo < pickedPos.length ? pickedPos[lo] : Infinity;
-            if ((p - left) >= localMin && (right - p) >= localMin) {
-              picked[i] = true;
-              pickedPos.splice(lo, 0, p);
-            }
-          }
-          for (let i = 0; i < N; i++) {
-            allTickEls[i].classList.toggle("hidden", !picked[i]);
-          }
-        }
-        function requestRecompute() {
-          if (rafPending) return;
-          rafPending = true;
-          requestAnimationFrame(recompute);
-        }
-
-        timeFilterEl.addEventListener("mousemove", (e) => {
-          const rect = ticksEl.getBoundingClientRect();
-          const pct = ((e.clientX - rect.left) / rect.width) * 100;
-          mouseXPct = Math.max(0, Math.min(100, pct));
-          requestRecompute();
+        timeFilterEl.addEventListener("mouseleave", () => k.clearHover());
+        shaTicksEl.addEventListener("mouseover", (e) => {
+          const tick = e.target.closest(".tick");
+          if (tick) k.hoverCommitByIdx(+tick.dataset.idx);
         });
-        timeFilterEl.addEventListener("mouseleave", () => {
-          mouseXPct = null;
-          requestRecompute();
-          // Clear the 3D cursor when the mouse leaves the slider bar,
-          // mirroring what happens when it leaves the scene.
-          k.clearHover();
+        shaTicksEl.addEventListener("click", (e) => {
+          const tick = e.target.closest(".tick");
+          if (tick) k.lockCommitByIdx(+tick.dataset.idx);
         });
-        // Hovering a tick drives the 3D cursor just like hovering a
-        // data point. Clicking locks that commit (replaces any
-        // existing lock).
-        for (const el of allTickEls) {
-          const idx = +el.dataset.idx;
-          el.addEventListener("mouseenter", () => k.hoverCommitByIdx(idx));
-          el.addEventListener("click", () => k.lockCommitByIdx(idx));
-        }
-        window.addEventListener("resize", requestRecompute);
-        recompute();
+
+        // Apply the default window without re-fetching — data already loaded.
+        applyWindow(true);
+        refreshTickMeta();
       }
     }
 

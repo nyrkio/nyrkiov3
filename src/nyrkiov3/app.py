@@ -687,10 +687,12 @@ def build_app(store=None, recent_cp_days=14, storage_path=None):
             raise HTTPError(502, f"fetch failed: {e}")
         framework = _sniff_content(blob)
         if framework is None:
+            preview = "\n".join(blob.splitlines()[:8])
             raise HTTPError(
                 400,
                 "couldn't identify benchmark format — sniff returned no match. "
-                "Supported formats are listed in benchzoo.parsers.PARSERS."
+                "Supported formats are listed in benchzoo.parsers.PARSERS.",
+                detail=preview,
             )
         try:
             parser_mod = find_parser(framework)

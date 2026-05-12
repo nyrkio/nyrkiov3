@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from purejson import Document, Collection
 from extjson import ObjectId, dumps, utcnow, parse_date, to_utc, UTC
-from jsonee import JsonEE, Request, Response, HTTPError, InMemoryStore
+from jsonee import JsonEE, Request, Response, HTTPError, InMemoryStore, open_store
 
 from . import auth as _auth
 
@@ -23,9 +23,7 @@ OAUTH_STATE_COOKIE = "nyrkio_oauth_state"
 
 # Snapshot config defaults. Overridable via build_app(store=…) when a
 # caller wants a pre-built store (tests, pure in-memory demos).
-DEFAULT_SNAPSHOT_DIR = "/home/claude/data"
-DEFAULT_SNAPSHOT_PATH = os.path.join(DEFAULT_SNAPSHOT_DIR, "nyrkio-store.json")
-DEFAULT_SNAPSHOT_INTERVAL_S = 60.0
+DEFAULT_STORAGE_PATH = "/home/claude/data/secantus"
 
 
 SCHEMAS = {
@@ -223,26 +221,19 @@ def _finalise_run(raw, *, repo_id, absolute, default_source):
     return doc
 
 
-def build_app(store=None, recent_cp_days=14, snapshot_path=None,
-              snapshot_interval_s=DEFAULT_SNAPSHOT_INTERVAL_S):
+def build_app(store=None, recent_cp_days=14, storage_path=None):
     """Build the v0 nyrkio app.
 
-    - ``store``: pre-built store to use (tests, in-memory demos). Takes
-      precedence over ``snapshot_path``.
-    - ``snapshot_path``: if set (and no ``store`` passed), the default
-      in-memory store restores from this file on startup and dumps to
-      it every ``snapshot_interval_s`` seconds. Pass
-      ``DEFAULT_SNAPSHOT_PATH`` for the canonical location.
+    - ``store``: pre-built store (tests, explicit InMemoryStore). When
+      omitted the app calls open_store() which:
+        • uses NYRKIO_MONGO_URI if set (real MongoDB or FerretDB)
+        • otherwise starts embedded secantusdb at ``storage_path``
+          (ephemeral in-memory when storage_path is None, persisted otherwise)
+    - ``storage_path``: directory for embedded secantusdb data. Ignored when
+      NYRKIO_MONGO_URI is set or a ``store`` is passed explicitly.
     """
     if store is None:
-        if snapshot_path:
-            os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
-            store = InMemoryStore(
-                snapshot_path=snapshot_path,
-                snapshot_interval_s=snapshot_interval_s,
-            )
-        else:
-            store = InMemoryStore()
+        store = open_store(storage_path=storage_path)
     app = JsonEE(schema_registry=SCHEMAS)
     app.store = store  # attach for tests / handlers
     # Background executor for work that shouldn't block HTTP handlers —

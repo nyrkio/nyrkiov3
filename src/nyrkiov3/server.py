@@ -49,6 +49,7 @@ def main() -> int:
     )
     storage_path = os.path.expanduser(os.environ.get("NYRKIO_STORAGE_PATH", DEFAULT_STORAGE_PATH))
     app = build_app(storage_path=storage_path)
+    app.mount_client()  # jsonee.js at /js/lib/jsonee.js
     # App-level token (for /public/connect and the webhook path).
     app.github_token = (os.environ.get("NYRKIO_APP_GITHUB_PAT")
                         or os.environ.get("CLAUDE_GITHUB_PAT") or None)

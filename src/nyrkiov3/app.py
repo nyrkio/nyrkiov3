@@ -23,7 +23,7 @@ OAUTH_STATE_COOKIE = "nyrkio_oauth_state"
 
 # Snapshot config defaults. Overridable via build_app(store=…) when a
 # caller wants a pre-built store (tests, pure in-memory demos).
-DEFAULT_STORAGE_PATH = "/home/claude/data/secantus"
+DEFAULT_STORAGE_PATH = "~/data/secantus"
 
 
 SCHEMAS = {

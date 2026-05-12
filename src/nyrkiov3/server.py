@@ -4,10 +4,14 @@ persistent storage and serves it via uvicorn.
 
 Env vars (all optional unless noted):
 
-- ``NYRKIO_SNAPSHOT_PATH``     where the store dumps JSON (default
-                               /var/lib/nyrkio/store.json).
+- ``NYRKIO_STORAGE_PATH``      directory for embedded secantusdb data
+                               (default /var/lib/nyrkio/secantus).
+                               Ignored when NYRKIO_MONGO_URI is set.
+- ``NYRKIO_MONGO_URI``         connect to an external MongoDB or FerretDB
+                               instead of the embedded secantusdb.
+- ``NYRKIO_MONGO_DB``          database name (default "nyrkio").
 - ``NYRKIO_STATIC_DIR``        path to AuroraBorealis/static/ — mounted
-                               at ``/`` so the SPA serves alongside
+                               at ``/`` so the JS app serves alongside
                                the API. Omit to run API-only.
 - ``NYRKIO_BIND``              host:port (default ``127.0.0.1:8123``).
                                Stay on localhost when nginx or another
@@ -32,7 +36,7 @@ import logging
 import os
 import sys
 
-from .app import build_app, DEFAULT_SNAPSHOT_PATH
+from .app import build_app, DEFAULT_STORAGE_PATH
 
 
 def main() -> int:
@@ -40,8 +44,8 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    snapshot_path = os.environ.get("NYRKIO_SNAPSHOT_PATH", DEFAULT_SNAPSHOT_PATH)
-    app = build_app(snapshot_path=snapshot_path)
+    storage_path = os.path.expanduser(os.environ.get("NYRKIO_STORAGE_PATH", DEFAULT_STORAGE_PATH))
+    app = build_app(storage_path=storage_path)
     # App-level token (for /public/connect and the webhook path).
     app.github_token = (os.environ.get("NYRKIO_APP_GITHUB_PAT")
                         or os.environ.get("CLAUDE_GITHUB_PAT") or None)
@@ -69,7 +73,9 @@ def main() -> int:
               file=sys.stderr)
         return 1
     n = app.store.collection("test_runs").count()
-    print(f"store has {n} runs (snapshot at {snapshot_path})")
+    mongo_uri = os.environ.get("NYRKIO_MONGO_URI")
+    store_desc = mongo_uri if mongo_uri else storage_path
+    print(f"store has {n} runs ({store_desc})")
     print(f"listening on http://{host}:{port}  (base_url={app.auth_config['base_url']})")
     uvicorn.run(app, host=host, port=int(port), log_level="info")
     return 0

@@ -10,9 +10,12 @@ Env vars (all optional unless noted):
 - ``NYRKIO_MONGO_URI``         connect to an external MongoDB or FerretDB
                                instead of the embedded secantusdb.
 - ``NYRKIO_MONGO_DB``          database name (default "nyrkio").
-- ``NYRKIO_STATIC_DIR``        path to AuroraBorealis/static/ — mounted
-                               at ``/`` so the JS app serves alongside
-                               the API. Omit to run API-only.
+- ``NYRKIO_STATIC_DIR``        path to nyrkiov3/static/ — mounted at
+                               ``/`` (index.html, app assets). Omit to
+                               run API-only.
+- ``NYRKIO_AURORA_DIR``        path to AuroraBorealis/static/ — mounted
+                               at ``/aurora/`` (the 3D library files).
+                               Required when NYRKIO_STATIC_DIR is set.
 - ``NYRKIO_BIND``              host:port (default ``127.0.0.1:8123``).
                                Stay on localhost when nginx or another
                                reverse proxy fronts the app.
@@ -53,6 +56,10 @@ def main() -> int:
     if static_dir and os.path.isdir(static_dir):
         app.static("/", static_dir)
         print(f"static: serving {static_dir} at /")
+    aurora_dir = os.environ.get("NYRKIO_AURORA_DIR")
+    if aurora_dir and os.path.isdir(aurora_dir):
+        app.static("/aurora", aurora_dir)
+        print(f"static: serving {aurora_dir} at /aurora/")
     # Bind address. Keep on localhost when a same-host reverse proxy
     # fronts the app. When nginx runs inside Docker on Linux and the
     # app runs on the host, you'll typically need to bind on the

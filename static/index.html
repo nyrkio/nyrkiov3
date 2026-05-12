@@ -1,0 +1,1437 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Nyrkiö · change detection</title>
+  <link rel="icon" type="image/png" href="nyrkio-moon.png" />
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12; color: #cdd; font-family: sans-serif; overflow: hidden; }
+    #graph { position: absolute; inset: 0; }
+
+    #status-panel { position: absolute; top: 10px; left: 50%;
+      transform: translateX(-50%);
+      padding: 6px 14px; background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;
+      color: #cdd; font-size: 11px; z-index: 2;
+      backdrop-filter: blur(4px);
+      white-space: nowrap;
+    }
+    #status-panel strong { margin-right: 8px; }
+    #brand-logo { height: 35px; width: 35px; vertical-align: -11px;
+      margin-right: 6px; opacity: 0.9; }
+    #status-panel .muted { color: #9ab; opacity: 0.8; }
+    #hint-toggle { cursor: help; margin-left: 10px;
+      color: #78c8ff;
+      border: 1px solid #78c8ff; border-radius: 50%;
+      width: 16px; height: 16px; display: inline-flex;
+      align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 600;
+      vertical-align: middle; transition: background 0.15s, color 0.15s; }
+    #hint-toggle:hover { background: #78c8ff; color: #0b0d12; }
+    #hint-popover { position: absolute; top: 44px; left: 50%;
+      transform: translateX(-50%); z-index: 5;
+      padding: 8px 14px; font-size: 11px; color: #cdd; opacity: 0.9;
+      background: rgba(0,0,0,0.65); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px; line-height: 1.55; text-align: left;
+      display: none; white-space: nowrap;
+    }
+    #hint-popover.visible { display: block; }
+
+    /* Mobile-only toolbar that gates each panel. Hidden by default. */
+    #mobile-toolbar { display: none; position: absolute; top: 10px; left: 10px;
+      z-index: 20; gap: 6px; }
+    #mobile-toolbar button {
+      background: rgba(0,0,0,0.6); color: #fff;
+      border: 1px solid rgba(255,255,255,0.2); border-radius: 8px;
+      padding: 8px 10px; font-size: 16px; cursor: pointer;
+      min-width: 44px; min-height: 44px;
+    }
+    #mobile-toolbar button.active { background: #78c8ff; color: #0b0d12; }
+    /* Backdrop that dims the canvas and absorbs touch when any panel
+       is open on mobile. Lives below the panel (z=15) and above the
+       3D canvas (z=1). */
+    #mobile-backdrop { display: none; position: fixed; inset: 0;
+      background: rgba(11,13,18,0.55); z-index: 15; }
+    body.panel-open #mobile-backdrop { display: block; }
+
+    .shape-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+    .swatch { display: inline-block; width: 14px; text-align: center; }
+
+    #z-pager {
+      position: absolute; top: 58px; left: 50%; transform: translateX(-50%);
+      z-index: 5;
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 10px;
+      background: rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      backdrop-filter: blur(4px);
+      color: #cdd; font-size: 11px;
+    }
+    #z-pager button { background: none; border: 1px solid rgba(255,255,255,0.15); color: #cdd;
+      cursor: pointer; padding: 1px 8px; border-radius: 3px; line-height: 1.3; }
+    #z-pager button:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: #fff; }
+    #z-pager button:disabled { opacity: 0.3; cursor: default; }
+    #z-pager .counter { opacity: 0.7; text-align: center; min-width: 80px; }
+
+    #commit-panel {
+      position: absolute; right: 0; top: 0; bottom: 0; width: 320px;
+      padding: 16px 18px; box-sizing: border-box;
+      background: linear-gradient(to left, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 100%);
+      color: #cdd; font-size: 12px; z-index: 3;
+      transform: translateX(100%); transition: transform 0.25s ease;
+      overflow-y: auto;
+      pointer-events: none;  /* don't swallow pointermoves for the 3D canvas */
+    }
+    #commit-panel .close { pointer-events: auto; }
+
+    #landing {
+      position: absolute; inset: 0; z-index: 10;
+      display: flex; align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at center, rgba(11,13,18,0.88), rgba(11,13,18,0.98));
+      backdrop-filter: blur(2px);
+    }
+    #landing .card { width: min(720px, 90vw); padding: 28px 32px;
+      background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px; color: #cdd; font-size: 14px; line-height: 1.5; }
+    #landing h1 { margin: 0 0 10px 0; font-size: 22px; color: #fff; font-weight: 600; letter-spacing: 0.02em; }
+    #landing .tag { margin: 0 0 20px 0; opacity: 0.85; }
+    #landing .paths { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 8px; }
+    #landing .path { padding: 18px; border-radius: 10px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); }
+    #landing .path h2 { margin: 0 0 8px 0; font-size: 13px; color: #fff; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.06em; }
+    #landing .path p { margin: 0 0 12px 0; font-size: 12px; opacity: 0.75; }
+    #landing .signin { display: inline-block; padding: 8px 14px; border-radius: 6px;
+      background: #24292f; color: #fff; text-decoration: none; font-size: 13px; }
+    #landing .signin[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
+    #landing form { display: flex; gap: 6px; }
+    #landing input[type="text"] { flex: 1; padding: 7px 10px; font-size: 13px;
+      background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.15); border-radius: 5px;
+      color: #fff; font-family: ui-monospace, Menlo, monospace; }
+    #landing button[type="submit"] { padding: 7px 14px; font-size: 13px;
+      background: #78c8ff; color: #0b0d12; border: none; border-radius: 5px; cursor: pointer; font-weight: 600; }
+    #landing button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #landing .examples { margin-top: 8px; font-size: 11px; opacity: 0.55; }
+    #landing .status { margin-top: 12px; font-size: 12px; color: #78c8ff; min-height: 18px; }
+    #landing .footer { margin-top: 22px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,0.08);
+      font-size: 11px; opacity: 0.7; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+    #landing .footer a { color: #cdd; text-decoration: none; }
+    #landing .footer a:hover { color: #78c8ff; }
+    #landing .footer .spacer { flex: 1; }
+    #landing .dashboards { margin-top: 22px; padding-top: 14px;
+      border-top: 1px solid rgba(255,255,255,0.08); }
+    #landing .dashboards h3 { margin: 0 0 10px 0; font-size: 11px; font-weight: 600;
+      opacity: 0.7; letter-spacing: 0.06em; text-transform: uppercase; }
+    #landing .dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 8px; }
+    #landing .dash-card { padding: 10px 12px; background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; color: #cdd;
+      text-decoration: none; font-size: 12px; transition: border-color 0.15s, background 0.15s; }
+    #landing .dash-card:hover { border-color: rgba(120,200,255,0.5); background: rgba(120,200,255,0.05); }
+    #landing .dash-card .name { color: #fff; font-family: ui-monospace, Menlo, monospace;
+      font-size: 12px; display: block; margin-bottom: 4px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; }
+    #landing .dash-card .stats { opacity: 0.6; font-size: 10px; }
+    #commit-panel.open { transform: translateX(0); }
+    #commit-panel h3 { margin: 0 0 10px 0; font-size: 11px; font-weight: 600;
+      opacity: 0.7; letter-spacing: 0.05em; text-transform: uppercase; }
+    #commit-panel .sha { font-family: ui-monospace, Menlo, monospace;
+      color: #ffc860; font-size: 13px; }
+    #commit-panel a.sha, #commit-panel a.subject { pointer-events: auto;
+      text-decoration: none; cursor: pointer; }
+    #commit-panel a.sha:hover, #commit-panel a.subject:hover { text-decoration: underline; }
+    #commit-panel .subject { margin: 8px 0; font-size: 14px; color: #fff; display: block; }
+    #commit-panel .meta { opacity: 0.7; margin: 4px 0; }
+    #commit-panel .delta { margin-top: 14px; padding-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.1); }
+    #commit-panel .delta .big { font-size: 18px; color: #ffc860; }
+    #commit-panel .delta .big.down { color: #ff6b6b; }
+    #commit-panel .close { position: absolute; top: 8px; right: 12px;
+      cursor: pointer; opacity: 0.5; font-size: 16px; }
+    #commit-panel .close:hover { opacity: 1; }
+
+    #left-column {
+      position: absolute; left: 10px; top: 10px; bottom: 10px;
+      width: 220px; z-index: 2;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    #filters {
+      flex: 1 1 auto; min-height: 0;
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 10px 14px;
+      /* Mirror the commit-panel's gradient: solid side attached to the
+         screen edge, fading toward the graph. Same intensity on both
+         sides of the scene. */
+      background: linear-gradient(to right, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 100%);
+      color: #cdd; font-size: 11px;
+      overflow: hidden;
+    }
+    /* Each group claims an even share of the column. Its body scrolls
+       internally so a 150-value test_name list doesn't push other
+       sections off-screen. Sections collapse to just their title by
+       toggling the ``collapsed`` class on the group. */
+    #filters .group { display: flex; flex-direction: column; gap: 4px;
+                      min-width: 0; min-height: 0; flex: 1 1 0;
+                      overflow: hidden; }
+    #filters .group.collapsed { flex: 0 0 auto; }
+    #filters .group.collapsed .radios { display: none; }
+    #filters .group-title { opacity: 0.6; font-size: 10px; letter-spacing: 0.05em;
+                            text-transform: uppercase; cursor: pointer;
+                            user-select: none; flex: 0 0 auto; }
+    #filters .group-title::before { content: "▾ "; font-size: 9px; opacity: 0.6; }
+    #filters .group.collapsed .group-title::before { content: "▸ "; }
+    #filters .radios { display: flex; flex-direction: column; gap: 2px;
+                       overflow-y: auto; min-height: 0; flex: 1 1 auto; }
+    #filters .radios label { display: flex; align-items: center; gap: 6px; cursor: pointer;
+                             max-width: 260px; white-space: nowrap; overflow: hidden;
+                             text-overflow: ellipsis; }
+    #filters input[type="radio"],
+    #filters input[type="checkbox"] { margin: 0; accent-color: #78c8ff; }
+    #filters .radios .all-toggle { opacity: 0.7; font-style: italic; }
+    #filters .slider-group { min-width: 280px; }
+    #time-filter {
+      position: absolute; bottom: 14px; left: 220px; right: 330px;
+      z-index: 4;
+      padding: 10px 16px;
+      background: rgba(0,0,0,0);
+      border: 1px solid rgba(255,255,255,0);
+      border-radius: 12px;
+      color: #cdd; font-size: 11px;
+      transition: background 0.25s ease, border-color 0.25s ease, backdrop-filter 0.25s ease;
+    }
+    #time-filter:hover {
+      background: rgba(0,0,0,0.45);
+      border-color: rgba(255,255,255,0.08);
+      backdrop-filter: blur(4px);
+    }
+    #time-filter .group-title { opacity: 0.6; font-size: 10px; letter-spacing: 0.05em;
+                                text-transform: uppercase; margin-bottom: 4px; }
+    #time-filter .slider-wrap { position: relative; height: 28px; display: flex; align-items: center; }
+    #time-filter .slider-wrap input[type="range"] {
+      position: absolute; width: 100%; pointer-events: none;
+      -webkit-appearance: none; appearance: none; background: none;
+      height: 4px; top: 12px; left: 0; margin: 0;
+    }
+    #time-filter .slider-wrap input[type="range"]::-webkit-slider-runnable-track {
+      height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px;
+    }
+    #time-filter .slider-wrap input[type="range"]::-moz-range-track {
+      height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px;
+    }
+    #time-filter .slider-wrap input[type="range"]::-webkit-slider-thumb {
+      pointer-events: auto; -webkit-appearance: none;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #78c8ff; border: none; cursor: pointer;
+      margin-top: -5px;
+    }
+    #time-filter .slider-wrap input[type="range"]::-moz-range-thumb {
+      pointer-events: auto;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #78c8ff; border: none; cursor: pointer;
+    }
+    /* Fixed-position date markers under the track: anchored at
+       percentage positions so they sit under the right commit
+       regardless of handle movement. ``transform:translateX(-50%)``
+       centers each label on its anchor; the first and last drop
+       that to stay flush with the bar edges. */
+    #time-filter .slider-labels { position: relative; height: 14px; font-size: 10px;
+                                  opacity: 0.7; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
+    #time-filter .slider-labels .lbl { position: absolute; top: 0;
+                                       transform: translateX(-50%); white-space: nowrap; }
+    #time-filter .slider-labels .lbl.edge-left  { transform: none; left: 0 !important; }
+    #time-filter .slider-labels .lbl.edge-right { transform: translateX(-100%); left: 100% !important; }
+    /* Per-commit ticks above the slider — githash written vertically,
+       CP count above it when > 0. Faded by default; reveal when the
+       user hovers the time-filter area so the chrome stays clean. */
+    #time-filter .slider-ticks { position: relative; height: 64px; margin-bottom: 2px;
+                                 opacity: 0; transition: opacity 0.25s ease; pointer-events: none; }
+    #time-filter:hover .slider-ticks { opacity: 1; pointer-events: auto; }
+    #time-filter .tick { position: absolute; bottom: 0; transform: translateX(-50%);
+                         display: flex; flex-direction: column; align-items: center;
+                         font-size: 9px; font-family: ui-monospace, Menlo, monospace;
+                         color: #9ab; cursor: default; line-height: 1; }
+    #time-filter .tick .sha { writing-mode: vertical-rl; transform: rotate(180deg);
+                              letter-spacing: 1px; }
+    #time-filter .tick .cp-count { font-size: 9px; color: #f29999; font-weight: 600;
+                                   margin-bottom: 2px; min-height: 10px; }
+    #time-filter .tick .cp-count:empty { min-height: 0; }
+    #time-filter .tick:hover { color: #fff; z-index: 2; }
+    #time-filter .tick.hidden { display: none; }
+    #filters .slider-wrap { position: relative; height: 28px; display: flex; align-items: center; }
+    #filters .slider-wrap input[type="range"] {
+      position: absolute; width: 100%; pointer-events: none;
+      -webkit-appearance: none; appearance: none; background: none;
+      height: 4px; top: 12px; left: 0; margin: 0;
+    }
+    #filters .slider-wrap input[type="range"]::-webkit-slider-runnable-track {
+      height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px;
+    }
+    #filters .slider-wrap input[type="range"]::-moz-range-track {
+      height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px;
+    }
+    #filters .slider-wrap input[type="range"]::-webkit-slider-thumb {
+      pointer-events: auto; -webkit-appearance: none;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #78c8ff; border: none; cursor: pointer;
+      margin-top: -5px;
+    }
+    #filters .slider-wrap input[type="range"]::-moz-range-thumb {
+      pointer-events: auto;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #78c8ff; border: none; cursor: pointer;
+    }
+    #filters .slider-labels { display: flex; justify-content: space-between; font-size: 10px;
+                              opacity: 0.7; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
+
+    #flyover {
+      position: absolute; bottom: 14px; left: 50%;
+      transform: translateX(-50%); z-index: 5;
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px;
+      color: #cdd; font-size: 12px;
+    }
+    #flyover button {
+      background: none; border: none; color: #cdd; cursor: pointer;
+      font-size: 16px; padding: 2px 6px; border-radius: 4px;
+      line-height: 1;
+    }
+    #flyover button:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    #flyover button:disabled { opacity: 0.3; cursor: default; }
+    #fly-counter { opacity: 0.7; min-width: 60px; text-align: center; }
+    #fly-status { opacity: 0.7; font-style: italic; min-width: 110px; }
+
+    /* Narrow-viewport layout. Placed last so these rules win the
+       cascade against any base-layout declarations above. */
+    @media (max-width: 768px) {
+      #mobile-toolbar { display: flex; }
+      /* Status bar: shrink and re-anchor so the toolbar fits. */
+      #status-panel { top: 10px; left: auto; right: 10px;
+        transform: none; font-size: 10px; padding: 4px 10px; }
+      #status-panel strong { font-size: 11px; margin-right: 4px; }
+
+      /* Left column panels collapse to hidden fullscreen overlays. */
+      #left-column { left: 0; top: 0; bottom: 0; width: 90%;
+        max-width: 320px; height: 100%; z-index: 18;
+        background: rgba(11,13,18,0.96);
+        border-right: 1px solid rgba(255,255,255,0.12);
+        transform: translateX(-110%);
+        transition: transform 0.2s ease;
+        padding: 60px 14px 14px;
+      }
+      #left-column.open { transform: translateX(0); }
+
+      /* Time slider is always visible on mobile — it's the anchor
+         for flyover state and future per-commit controls. The
+         drawer slides in over it via a higher z-index. */
+      #time-filter { left: 8px; right: 8px; bottom: 8px;
+        z-index: 5;
+      }
+
+      /* Commit panel becomes a bottom sheet full-width. The desktop
+         gradient background (right-edge fade) reads oddly as a bottom
+         sheet, so flatten it to a solid dark fill. */
+      #commit-panel { width: 100%; max-width: 100%;
+        top: auto; bottom: 0; left: 0; right: 0;
+        height: 50svh;
+        transform: translateY(100%);
+        background: rgba(11,13,18,0.93);
+        border-top-left-radius: 12px; border-top-right-radius: 12px;
+        border-top: 1px solid rgba(255,255,255,0.1);
+      }
+      #commit-panel.open { transform: translateY(0); }
+
+      /* Flyover controls sit above the bottom sheet area. */
+      #flyover { bottom: 8px; }
+
+      /* Hint popover: let it wrap and span full width. */
+      #hint-popover { left: 10px; right: 10px; transform: none;
+        width: auto; white-space: normal; }
+    }
+</style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="mobile-toolbar">
+    <button id="btn-panel" title="series &amp; filters" aria-label="series and filters">☰</button>
+  </div>
+  <div id="mobile-backdrop"></div>
+  <div id="status-panel">
+    <img id="brand-logo" src="nyrkio-moon.png" alt="Nyrkiö" title="Nyrkiö" />
+    <strong>change detection</strong><span id="status" style="opacity:0.85; margin-left:8px;"></span>
+    <span id="hint-toggle" title="click for help">?</span>
+  </div>
+  <div id="hint-popover">
+    drag to rotate · right-drag to pan · scroll to zoom<br/>
+    hover any point for commit details<br/>
+    <span style="color:#f29999">red</span> = regression ·
+    <span style="color:#aee5b8">green</span> = improvement
+  </div>
+
+  <div id="z-pager" style="display: none">
+    <button id="page-prev" title="previous page">«</button>
+    <span class="counter" id="page-counter"></span>
+    <button id="page-next" title="next page">»</button>
+  </div>
+
+  <div id="left-column">
+    <div id="filters" style="display: none"></div>
+  </div>
+
+  <div id="graph"></div>
+
+  <div id="time-filter" style="display: none"></div>
+
+  <div id="landing" style="display: none">
+    <div class="card">
+      <h1><img src="nyrkio-moon.png" alt="Nyrkiö" title="Nyrkiö"
+          style="height:28px; width:28px; vertical-align:-7px; margin-right:10px;" />change detection</h1>
+      <p class="tag">Point us at a repo. We read your existing benchmark and
+        unit-test output from GitHub Actions — no code changes on your side.
+        A couple of minutes later you'll see whether recent commits introduced
+        a performance regression.</p>
+      <div class="paths">
+        <div class="path">
+          <h2>Your own repo</h2>
+          <p>Sign in with GitHub. We'll list your repos and you pick which
+             ones to analyse. You get live updates as new workflow runs
+             complete.</p>
+          <a class="signin" id="signin-btn" href="login">Sign in with GitHub →</a>
+        </div>
+        <div class="path">
+          <h2>Explore a public repo</h2>
+          <p>Type an <code>owner/name</code> and we'll backfill its most
+             recent benchmark history. Read-only — no account needed.</p>
+          <form id="public-form">
+            <input type="text" id="public-repo" autocomplete="off"
+                   placeholder="owner/repo" required pattern="[^\/]+\/[^\/]+">
+            <button type="submit">Go</button>
+          </form>
+          <div class="examples">try: unodb-dev/unodb · tigerbeetle/devhubdb</div>
+          <div class="status" id="public-status"></div>
+          <div id="file-picker" style="display:none; margin-top:10px">
+            <div id="workflows-section">
+              <div style="font-size:11px; opacity:0.7; margin-bottom:6px">
+                Pick one or more GitHub Actions workflows to import benchmark results from:
+              </div>
+              <div id="workflow-list" style="max-height:140px; overflow:auto;
+                   border:1px solid rgba(255,255,255,0.1); border-radius:6px;
+                   background:rgba(0,0,0,0.2); font-size:12px;
+                   padding:4px 0;"></div>
+              <div style="margin-top:6px; display:flex; gap:8px; align-items:center">
+                <button id="run-backfill" type="button"
+                        style="padding:5px 10px; font-size:12px;
+                               background:rgba(120,200,255,0.15);
+                               border:1px solid rgba(120,200,255,0.5);
+                               color:#cdd; border-radius:4px; cursor:pointer;"
+                        disabled>Detect and Import Benchmarks</button>
+                <span id="backfill-count" style="font-size:11px; opacity:0.55"></span>
+              </div>
+            </div>
+            <div id="files-section" style="margin-top:12px">
+              <div style="font-size:11px; opacity:0.7; margin-bottom:6px">
+                Or pick a data file to import:
+              </div>
+              <div id="file-list" style="max-height:160px; overflow:auto;
+                   border:1px solid rgba(255,255,255,0.1); border-radius:6px;
+                   background:rgba(0,0,0,0.2); font-size:12px;
+                   font-family:ui-monospace,Menlo,monospace"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="dashboards" id="dashboards" style="display: none">
+        <h3>existing dashboards</h3>
+        <div class="dash-grid" id="dash-grid"></div>
+      </div>
+      <div class="footer">
+        <a href="?repo=demo/bench" style="color:#78c8ff;">demo data</a>
+        <a href="https://blog.nyrkio.com" target="_blank" rel="noopener">Blog</a>
+        <a href="https://docs.nyrkio.com" target="_blank" rel="noopener">Docs</a>
+        <a href="https://github.com/nyrkio" target="_blank" rel="noopener">GitHub</a>
+        <span class="spacer"></span>
+        <span id="auth-indicator"></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="commit-panel">
+    <span class="close" id="cp-close">✕</span>
+    <div id="cp-body"></div>
+  </div>
+
+
+  <div id="flyover">
+    <button id="fly-prev" title="previous change point">⏮</button>
+    <button id="fly-play" title="play / pause">▶</button>
+    <button id="fly-next" title="next change point">⏭</button>
+    <span id="fly-counter">–</span>
+    <span id="fly-status"></span>
+  </div>
+
+  <script type="module">
+    import { Aurora } from "/aurora/aurora.js";
+
+    const container = document.getElementById("graph");
+    const status = document.getElementById("status");
+
+    const k = new Aurora(container);
+
+    const pagerEl = document.getElementById("z-pager");
+    const pagePrev = document.getElementById("page-prev");
+    const pageNext = document.getElementById("page-next");
+    const pageCounter = document.getElementById("page-counter");
+    let pagerState = { pageStart: 0, pageSize: 0, total: 0 };
+    pagePrev.addEventListener("click", () => {
+      const { pageStart, pageSize } = pagerState;
+      k.setPage(Math.max(0, pageStart - pageSize));
+    });
+    pageNext.addEventListener("click", () => {
+      const { pageStart, pageSize, total } = pagerState;
+      k.setPage(Math.min(total - pageSize, pageStart + pageSize));
+    });
+
+    function updatePager(e) {
+      pagerState = {
+        pageStart: e.page_start || 0,
+        pageSize: e.page_size || e.series_count,
+        total: e.total_series || e.series_count,
+      };
+      const { pageStart, pageSize, total } = pagerState;
+      // Only show the pager when paging is actually relevant.
+      if (total > pageSize) {
+        pagerEl.style.display = "flex";
+        const pageNum = Math.floor(pageStart / pageSize) + 1;
+        const pageCount = Math.ceil(total / pageSize);
+        const lo = pageStart + 1;
+        const hi = Math.min(pageStart + pageSize, total);
+        pageCounter.textContent = `${pageNum}/${pageCount} · ${lo}-${hi} of ${total}`;
+        pagePrev.disabled = pageStart <= 0;
+        pageNext.disabled = pageStart + pageSize >= total;
+      } else {
+        pagerEl.style.display = "none";
+      }
+    }
+
+    const panel = document.getElementById("commit-panel");
+    const panelBody = document.getElementById("cp-body");
+    document.getElementById("cp-close").addEventListener("click", () => panel.classList.remove("open"));
+
+    function fmtNum(x) {
+      if (Math.abs(x) >= 1000) return x.toFixed(0);
+      if (Math.abs(x) >= 10) return x.toFixed(1);
+      return x.toFixed(3);
+    }
+    function fmtDate(ms) {
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? "?" : d.toISOString().slice(0, 10);
+    }
+    function commitDate(c, fallbackMs) {
+      if (c && typeof c.commit_time === "number") return fmtDate(c.commit_time * 1000);
+      return fmtDate(fallbackMs);
+    }
+    const KIND_GLYPH = {
+      duration:   "●",
+      throughput: "▶",
+      size:       "■",
+      ratio:      "▬",
+      count:      "◆",
+    };
+    function escHtml(s) {
+      return String(s || "").replace(/[&<>"']/g, (c) => (
+        {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+    function commitLink(c) {
+      if (!c || !c.sha || !c.repo) return null;
+      // Expect repo = "owner/name" — the benchzoo v2 convention.
+      if (!/^[^/]+\/[^/]+$/.test(c.repo)) return null;
+      return `https://github.com/${c.repo}/commit/${c.sha}`;
+    }
+    function showPoint(p, siblings) {
+      const c = p.commit || {};
+      const sha = c.short_sha || (c.sha || "").slice(0, 7);
+      const href = commitLink(c);
+      const shaHtml = href
+        ? `<a class="sha" href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${escHtml(sha)}</a>`
+        : `<div class="sha">${escHtml(sha)}</div>`;
+      const subjectText = c.message || "(no message)";
+      const subjectHtml = href
+        ? `<a class="subject" href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${escHtml(subjectText)}</a>`
+        : `<div class="subject">${escHtml(subjectText)}</div>`;
+      const header = `
+        ${shaHtml}
+        ${subjectHtml}
+        <div class="meta">${escHtml(c.author || "?")} · ${escHtml(commitDate(c, p.timestamp))}${c.ref ? " · " + escHtml(c.ref) : ""}${c.repo ? " · " + escHtml(c.repo) : ""}</div>
+      `;
+      let body;
+      if (siblings && siblings.length > 0) {
+        // Multiple change points landed on this commit — list all,
+        // largest first. The visual highlight is on siblings[0].
+        const count = siblings.length;
+        const items = siblings.map(s => {
+          const u = s.mesh.userData;
+          const pct = u.cpDeltaPct * 100;
+          const sign = pct >= 0 ? "+" : "";
+          const klass = u.regression ? "down" : "";
+          const label = u.regression ? "regression" : "improvement";
+          return `
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);">
+              <div class="meta">${u.series_name}</div>
+              <div class="meta">${label} · ${u.direction || ""}</div>
+              <div class="big ${klass}">${sign}${pct.toFixed(1)}%</div>
+              <div class="meta">${fmtNum(u.cpBefore)} → ${fmtNum(u.cpAfter)} ${u.unit || ""}</div>
+            </div>`;
+        }).join("");
+        body = `
+          <div class="meta" style="margin-top: 10px;">${count} change point${count>1?"s":""} on this commit</div>
+          ${items}
+        `;
+      } else {
+        let deltaBlock = "";
+        if (p.isChangePoint) {
+          const pct = p.cpDeltaPct * 100;
+          const sign = pct >= 0 ? "+" : "";
+          const label = p.regression ? "regression" : "improvement";
+          const klass = p.regression ? "down" : "";
+          deltaBlock = `
+            <div class="delta">
+              <div class="meta">${label} · ${p.direction || ""}</div>
+              <div class="big ${klass}">${sign}${pct.toFixed(1)}%</div>
+              <div class="meta">${fmtNum(p.cpBefore)} → ${fmtNum(p.cpAfter)} ${p.unit || ""}</div>
+            </div>`;
+        }
+        const glyph = KIND_GLYPH[p.kind] || "●";
+        body = `
+          <div class="meta" style="color:#fff">${escHtml(p.series_name)}</div>
+          <div class="meta"><span style="color:#fff">${glyph} ${escHtml(p.kind || "")}</span></div>
+          <div class="meta">value: <span style="color:#fff">${fmtNum(p.value)} ${escHtml(p.unit || "")}</span></div>
+          ${deltaBlock}
+        `;
+      }
+      panelBody.innerHTML = header + body;
+      panel.classList.add("open");
+    }
+
+    const flyPlay = document.getElementById("fly-play");
+    const flyPrev = document.getElementById("fly-prev");
+    const flyNext = document.getElementById("fly-next");
+    const flyCounter = document.getElementById("fly-counter");
+    const flyStatus = document.getElementById("fly-status");
+
+    flyPlay.addEventListener("click", () => k.toggleFlyover());
+    flyPrev.addEventListener("click", () => k.stepFlyover(-1));
+    flyNext.addEventListener("click", () => k.stepFlyover(+1));
+
+    function updateFlyover(e) {
+      const total = e.total || 0;
+      // Label "N / M commits" so the number doesn't get confused
+      // with the "X change points" count in the status bar — a single
+      // commit can carry multiple change points.
+      flyCounter.textContent = total > 0
+        ? `${Math.min(e.idx + 1, total)} / ${total} commits`
+        : "–";
+      if (e.state === "countdown") {
+        flyPlay.textContent = "⏸";
+        flyStatus.textContent = `starts in ${e.countdown}s`;
+      } else if (e.state === "playing") {
+        flyPlay.textContent = "⏸";
+        flyStatus.textContent = "playing";
+      } else if (e.state === "paused") {
+        flyPlay.textContent = "▶";
+        flyStatus.textContent = "paused";
+      } else if (e.state === "done") {
+        flyPlay.textContent = "▶";
+        flyStatus.textContent = "end — ▶ to replay";
+      } else {
+        flyPlay.textContent = "▶";
+        flyStatus.textContent = "";
+      }
+      flyPrev.disabled = total === 0 || e.idx <= 0;
+      flyNext.disabled = total === 0 || e.idx >= total - 1;
+    }
+
+    k.narrator.subscribe(e => {
+      if (e.type === "render_complete") {
+        status.textContent = `· ${e.point_count} points · ${e.change_points} change points`;
+        updatePager(e);
+        // Kick off the flyover automatically — the 10s countdown gives
+        // viewers time to read the scene first.
+        k.startFlyover();
+      } else if (e.type === "flyover_state") {
+        updateFlyover(e);
+      } else if (e.type === "point_hovered") {
+        showPoint(e.point, e.siblings);
+      }
+    });
+
+    // ---- landing page (shown when no ?repo= was provided) --------------
+
+    const urlParams = new URLSearchParams(location.search);
+    const hasRepo = !!urlParams.get("repo");
+    const landingEl = document.getElementById("landing");
+    if (!hasRepo) {
+      landingEl.style.display = "flex";
+      // Grey out the sign-in link when OAuth isn't configured server-side.
+      fetch("api/v3/config").then(r => r.ok ? r.json() : {}).then(cfg => {
+        if (!cfg.auth_enabled) {
+          const btn = document.getElementById("signin-btn");
+          btn.setAttribute("aria-disabled", "true");
+          btn.onclick = (e) => { e.preventDefault();
+            document.getElementById("public-status").textContent =
+              "(sign-in not configured on this instance — use the public path →)";
+          };
+        }
+      }).catch(() => {});
+      // Who am I (if signed in)?
+      fetch("api/v3/me").then(r => r.ok ? r.json() : null).then(me => {
+        const el = document.getElementById("auth-indicator");
+        if (me) {
+          el.innerHTML = `signed in as <span style="color:#fff">${me.username}</span> · `
+            + `<a href="logout">sign out</a>`;
+        } else {
+          el.textContent = "not signed in";
+        }
+      }).catch(() => {});
+      // List of existing dashboards.
+      fetch("api/v3/public/dashboards").then(r => r.ok ? r.json() : []).then(list => {
+        if (!Array.isArray(list) || list.length === 0) return;
+        document.getElementById("dashboards").style.display = "block";
+        const grid = document.getElementById("dash-grid");
+        for (const d of list) {
+          const ab = d.absolute_name || "";
+          const short = ab.replace(/^gh\//, "");
+          const a = document.createElement("a");
+          a.className = "dash-card";
+          // Github is the default; strip the vendor prefix from the URL.
+          // No metric= pinning: different repos have different native
+          // metric vocabularies (TPS / RSS / build time / …), so the
+          // dashboard decides per data what to show by default.
+          a.href = `?repo=${encodeURIComponent(short)}`;
+          const runCount = d.run_count || 0;
+          const latest = d.latest && (d.latest.$date || d.latest);
+          const latestDay = latest ? new Date(latest).toISOString().slice(0, 10) : "?";
+          a.innerHTML = `<span class="name">${short}</span>`
+            + `<span class="stats">${runCount.toLocaleString()} runs · latest ${latestDay}</span>`;
+          grid.appendChild(a);
+        }
+      }).catch(() => {});
+      const form = document.getElementById("public-form");
+      const statusEl = document.getElementById("public-status");
+      const pickerEl = document.getElementById("file-picker");
+      const fileListEl = document.getElementById("file-list");
+      const workflowListEl = document.getElementById("workflow-list");
+      const runBackfillEl = document.getElementById("run-backfill");
+      const backfillCountEl = document.getElementById("backfill-count");
+      const filesSectionEl = document.getElementById("files-section");
+      const workflowsSectionEl = document.getElementById("workflows-section");
+
+      // Track which workflow filenames the user has checked.
+      let selectedWorkflows = new Set();
+
+      async function runBackfill(repo, workflows) {
+        const n = workflows.length;
+        statusEl.textContent = `Queuing backfill for ${n} workflow${n === 1 ? "" : "s"}…`;
+        pickerEl.style.display = "none";
+        try {
+          const r = await fetch("api/v3/public/connect", {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({repo, workflows}),
+          });
+          if (!r.ok) {
+            statusEl.textContent = `error: ${r.status} ${await r.text()}`;
+            return;
+          }
+          statusEl.textContent = "Ingesting — polling for data (up to ~90s)…";
+          const testsUrl = `/api/v3/tests/gh/${repo}`;
+          const t0 = Date.now();
+          while (Date.now() - t0 < 90_000) {
+            await new Promise(res => setTimeout(res, 3000));
+            const tr = await fetch(testsUrl);
+            if (tr.ok) {
+              const d = await tr.json();
+              if (d.length > 0) {
+                location.search = `?repo=${repo}`;
+                return;
+              }
+            }
+          }
+          statusEl.textContent = "still ingesting — try reloading in a minute";
+        } catch (err) {
+          statusEl.textContent = "error: " + err.message;
+        }
+      }
+
+      async function ingestFile(sourceRepo, path) {
+        statusEl.textContent = `Fetching ${path} and ingesting…`;
+        pickerEl.style.display = "none";
+        try {
+          const r = await fetch("api/v3/public/ingest-url", {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({source_repo: sourceRepo, path}),
+          });
+          const body = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            statusEl.textContent = `error: ${r.status} ${body.detail || ""}`;
+            return;
+          }
+          location.search = `?repo=${body.target_repo}`;
+        } catch (err) {
+          statusEl.textContent = "error: " + err.message;
+        }
+      }
+
+      function renderFileList(sourceRepo, files) {
+        fileListEl.innerHTML = "";
+        if (files.length === 0) {
+          filesSectionEl.style.display = "none";
+          return;
+        }
+        filesSectionEl.style.display = "block";
+        for (const f of files) {
+          const row = document.createElement("div");
+          row.style.padding = "6px 10px";
+          row.style.cursor = "pointer";
+          row.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+          row.addEventListener("mouseenter", () =>
+            row.style.background = "rgba(120,200,255,0.12)");
+          row.addEventListener("mouseleave", () => row.style.background = "");
+          const sz = f.size != null
+            ? ` <span style="opacity:0.5">· ${Math.round(f.size / 1024)} KB</span>`
+            : "";
+          row.innerHTML = `${f.path}${sz}`;
+          row.addEventListener("click", () => ingestFile(sourceRepo, f.path));
+          fileListEl.appendChild(row);
+        }
+      }
+
+      function updateBackfillButton() {
+        const n = selectedWorkflows.size;
+        runBackfillEl.disabled = n === 0;
+        backfillCountEl.textContent = n === 0
+          ? "(nothing selected)"
+          : `${n} workflow${n === 1 ? "" : "s"} selected`;
+      }
+
+      function renderWorkflowList(workflows) {
+        workflowListEl.innerHTML = "";
+        selectedWorkflows = new Set();
+        if (workflows.length === 0) {
+          workflowsSectionEl.style.display = "none";
+          return;
+        }
+        workflowsSectionEl.style.display = "block";
+        for (const wf of workflows) {
+          const filename = (wf.path || "").split("/").pop();
+          const label = document.createElement("label");
+          label.style.display = "flex";
+          label.style.alignItems = "center";
+          label.style.gap = "8px";
+          label.style.padding = "4px 10px";
+          label.style.cursor = "pointer";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = filename;
+          input.addEventListener("change", () => {
+            if (input.checked) selectedWorkflows.add(filename);
+            else selectedWorkflows.delete(filename);
+            updateBackfillButton();
+          });
+          label.appendChild(input);
+          const txt = document.createElement("span");
+          txt.innerHTML = `<strong style="color:#cdd">${wf.name}</strong>`
+            + ` <span style="opacity:0.5; font-family:ui-monospace,Menlo,monospace">`
+            + `${filename}</span>`;
+          label.appendChild(txt);
+          workflowListEl.appendChild(label);
+        }
+        updateBackfillButton();
+      }
+
+      async function scanRepo(repo) {
+        statusEl.textContent = "Scanning repo for data files and workflows…";
+        const treeUrl = `https://api.github.com/repos/${repo}/git/trees/HEAD?recursive=1`;
+        const workflowsUrl = `https://api.github.com/repos/${repo}/actions/workflows`;
+        try {
+          // Fire both GitHub API calls in parallel — independent data,
+          // no reason to serialise.
+          const [tr, wr] = await Promise.all([fetch(treeUrl), fetch(workflowsUrl)]);
+          if (!tr.ok) {
+            if (tr.status === 403) {
+              statusEl.textContent = "GitHub API rate-limited — sign in or try later";
+            } else if (tr.status === 404) {
+              statusEl.textContent = `repo not found: ${repo}`;
+            } else {
+              statusEl.textContent = `GitHub API error ${tr.status}`;
+            }
+            return;
+          }
+          const tree = await tr.json();
+          const files = (tree.tree || [])
+            .filter(n => n.type === "blob" && /\.(json|csv)$/i.test(n.path))
+            .map(n => ({path: n.path, size: n.size}));
+          const truncNote = tree.truncated ? " (truncated)" : "";
+
+          let workflows = [];
+          if (wr.ok) {
+            const wdoc = await wr.json();
+            workflows = (wdoc.workflows || [])
+              .filter(w => w.state === "active")
+              .map(w => ({name: w.name, path: w.path, id: w.id}));
+          }
+
+          const fCount = files.length;
+          const wCount = workflows.length;
+          statusEl.textContent =
+            `Found ${fCount} data file${fCount === 1 ? "" : "s"}${truncNote} · `
+            + `${wCount} workflow${wCount === 1 ? "" : "s"}`;
+          renderFileList(repo, files);
+          renderWorkflowList(workflows);
+          if (fCount === 0 && wCount === 0) {
+            pickerEl.style.display = "block";
+            fileListEl.innerHTML = `<div style="padding:10px; opacity:0.6">
+              Nothing to import — no data files or workflows found.</div>`;
+            filesSectionEl.style.display = "block";
+          } else {
+            pickerEl.style.display = "block";
+          }
+        } catch (err) {
+          statusEl.textContent = "error: " + err.message;
+        }
+      }
+
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const repo = document.getElementById("public-repo").value.trim();
+        if (!/^[^/]+\/[^/]+$/.test(repo)) {
+          statusEl.textContent = "expected owner/name";
+          return;
+        }
+        scanRepo(repo);
+      });
+      runBackfillEl.addEventListener("click", () => {
+        const repo = document.getElementById("public-repo").value.trim();
+        if (repo && selectedWorkflows.size > 0) {
+          runBackfill(repo, [...selectedWorkflows]);
+        }
+      });
+      // Landing is the whole interaction; don't continue to aurora boot.
+      // (fetchAndRender fires when user clicks "demo data" or similar link.)
+    }
+
+    // ---- filters bar (facets + time slider) ----------------------------
+
+    // `?repo=owner/name` is the canonical form — github is assumed
+    // because it's the only git vendor wired up. An optional leading
+    // vendor segment (`gh/`, `gl/`) is still accepted so old pasted
+    // URLs keep working and the scheme extends cleanly if we ever
+    // add a second vendor.
+    let repoRaw = urlParams.get("repo") || "demo/bench";
+    repoRaw = repoRaw.replace(/^\/?api\/v3\/tests\//, "");
+    const [repoInput, extraQs] = repoRaw.split("?");
+    const extraParams = new URLSearchParams(extraQs || "");
+    const _segs = repoInput.split("/").filter(Boolean);
+    let _vendor = "gh";
+    let _ownerRepo;
+    if (_segs.length >= 3 && /^g[hl]$/.test(_segs[0])) {
+      _vendor = _segs[0];
+      _ownerRepo = _segs.slice(1).join("/");
+    } else {
+      _ownerRepo = _segs.join("/");
+    }
+    const repoPath = `${_vendor}/${_ownerRepo}`;
+    const testsBase = `/api/v3/tests/${repoPath}`;
+    const facetsBase = `${testsBase}/facets`;
+
+    // Mutable filter state. Each facet dim is an array; empty = "all".
+    // Multi-valued dims are encoded as repeated query params
+    // (``?test_name=a&test_name=b``) — the standard web convention,
+    // no separator character to collide with value content. Timestamps
+    // stay scalar.
+    function _parseListParam(urlParams, extraParams, key) {
+      const a = urlParams.getAll(key).filter(Boolean);
+      if (a.length) return a;
+      return extraParams.getAll(key).filter(Boolean);
+    }
+    const filters = {
+      metric:    _parseListParam(urlParams, extraParams, "metric"),
+      branch:    _parseListParam(urlParams, extraParams, "branch"),
+      test_name: _parseListParam(urlParams, extraParams, "test_name"),
+      workflow:  _parseListParam(urlParams, extraParams, "workflow"),
+      runner:    _parseListParam(urlParams, extraParams, "runner"),
+      since: "", until: "",
+    };
+
+    function buildQs(src, extraExclude = []) {
+      const parts = [];
+      const encKey = encodeURIComponent;
+      const encVal = encodeURIComponent;
+      for (const [k, v] of Object.entries(src)) {
+        if (extraExclude.includes(k)) continue;
+        if (Array.isArray(v)) {
+          // Repeated params for multi-value filters: ?k=a&k=b.
+          // No separator character means no content-collision risk.
+          for (const item of v) parts.push(`${encKey(k)}=${encVal(item)}`);
+        } else if (v) {
+          parts.push(`${encKey(k)}=${encVal(v)}`);
+        }
+      }
+      return parts.length ? "?" + parts.join("&") : "";
+    }
+
+    // Mobile: the left column and time-range slider are hidden by
+    // default; a tiny top-left toolbar toggles each as an overlay.
+    // Backdrop dims the 3D canvas and absorbs taps so the user can't
+    // accidentally rotate the scene while scrolling a list.
+    (() => {
+      const leftCol = document.getElementById("left-column");
+      const commitPanel = document.getElementById("commit-panel");
+      const btnPanel = document.getElementById("btn-panel");
+      const backdrop = document.getElementById("mobile-backdrop");
+      function syncBodyClass() {
+        const anyOpen = leftCol.classList.contains("open") ||
+                        commitPanel.classList.contains("open");
+        document.body.classList.toggle("panel-open", anyOpen);
+        btnPanel.classList.toggle("active", leftCol.classList.contains("open"));
+      }
+      function closeAll() {
+        leftCol.classList.remove("open");
+        commitPanel.classList.remove("open");
+        syncBodyClass();
+      }
+      btnPanel.addEventListener("click", (e) => {
+        e.stopPropagation();
+        leftCol.classList.toggle("open");
+        syncBodyClass();
+      });
+      backdrop.addEventListener("click", closeAll);
+      window.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeAll();
+      });
+    })();
+
+    // Help popover: click "?" in the status bar to reveal camera /
+    // color legend tips; click again (or anywhere else) to dismiss.
+    (() => {
+      const toggle = document.getElementById("hint-toggle");
+      const pop = document.getElementById("hint-popover");
+      if (toggle && pop) {
+        toggle.addEventListener("click", (e) => {
+          e.stopPropagation();
+          pop.classList.toggle("visible");
+        });
+        document.addEventListener("click", () => pop.classList.remove("visible"));
+      }
+    })();
+
+    const filtersEl = document.getElementById("filters");
+    const timeFilterEl = document.getElementById("time-filter");
+
+    function extractTs(x) {
+      if (x && typeof x === "object" && "$date" in x) return new Date(x.$date).getTime();
+      if (typeof x === "string") return new Date(x).getTime();
+      return 0;
+    }
+
+    function fmtDay(ms) {
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? "?" : d.toISOString().slice(0, 10);
+    }
+
+    // Facet radio groups are rendered ONCE (on first facets response
+    // with varying values). Subsequent reloads only update which
+    // radio is checked — otherwise picking "Intel" shrinks the
+    // filtered slice to one distinct runner value, varying becomes
+    // empty, and the whole control disappears just when the user
+    // wants to switch back.
+    let _filtersRendered = false;
+    function renderFilters(facetsData) {
+      timeFilterEl.innerHTML = "";
+      const span = facetsData.timestamp_span;
+      const varying = facetsData.varying || [];
+
+      if (!_filtersRendered && varying.length > 0) {
+        filtersEl.innerHTML = "";
+        filtersEl.style.display = "flex";
+        for (const dim of varying) {
+          const values = facetsData.facets[dim] || [];
+          const group = document.createElement("div");
+          group.className = "group";
+          const h = document.createElement("div");
+          h.className = "group-title";
+          h.textContent = dim;
+          h.title = "click to collapse";
+          h.addEventListener("click", () => group.classList.toggle("collapsed"));
+          group.appendChild(h);
+          const rows = document.createElement("div");
+          rows.className = "radios";
+          // "All" is a shortcut: checking it clears the dim's filter
+          // (empty array = server returns everything); unchecking it
+          // by picking any individual box just lets the per-value
+          // checkboxes take over. Shown as italic so it reads as a
+          // meta-row, not a real value.
+          const allWrap = document.createElement("label");
+          const allInput = document.createElement("input");
+          allInput.type = "checkbox";
+          allInput.checked = (filters[dim] || []).length === 0;
+          allInput.addEventListener("change", () => {
+            if (allInput.checked) {
+              filters[dim] = [];
+              // Uncheck all per-value boxes for this dim.
+              rows.querySelectorAll('input.val').forEach(i => { i.checked = false; });
+            } else {
+              // Can't un-check "all" without picking something — snap back.
+              allInput.checked = true;
+              return;
+            }
+            void reload();
+          });
+          allWrap.appendChild(allInput);
+          const allText = document.createElement("span");
+          allText.className = "all-toggle";
+          allText.textContent = `all (${values.length})`;
+          allWrap.appendChild(allText);
+          rows.appendChild(allWrap);
+
+          for (const val of values) {
+            const id = `f-${dim}-${btoa(val).replace(/=/g,"")}`;
+            const wrap = document.createElement("label");
+            wrap.setAttribute("for", id);
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.id = id;
+            input.className = "val";
+            input.value = val;
+            input.dataset.dim = dim;
+            input.checked = (filters[dim] || []).includes(val);
+            input.addEventListener("change", () => {
+              const set = new Set(filters[dim] || []);
+              if (input.checked) set.add(val); else set.delete(val);
+              filters[dim] = [...set];
+              // "All" auto-syncs: it becomes checked iff no specific
+              // value is selected, and turns off the moment the user
+              // picks anything concrete.
+              allInput.checked = filters[dim].length === 0;
+              void reload();
+            });
+            wrap.appendChild(input);
+            wrap.appendChild(document.createTextNode(val));
+            wrap.title = val;
+            // Hover a row to highlight every Z-lane whose series
+            // matches this (dim, value) — e.g. hovering ``threads · 8``
+            // lights up all series running with 8 threads, across
+            // every test_name and metric.
+            wrap.addEventListener("mouseenter", () => k.hoverSeriesMatching(dim, val));
+            wrap.addEventListener("mouseleave", () => k.clearHoverGroup());
+            rows.appendChild(wrap);
+          }
+          group.appendChild(rows);
+          filtersEl.appendChild(group);
+        }
+        _filtersRendered = true;
+      } else if (_filtersRendered) {
+        // Sync each checkbox to the current filters state.
+        filtersEl.querySelectorAll('input.val').forEach((input) => {
+          const dim = input.dataset.dim;
+          if (!dim) return;
+          input.checked = (filters[dim] || []).includes(input.value);
+        });
+      }
+      // The time-range slider is commit-indexed, not timestamp-based —
+      // it gets set up after runs arrive (see setupTimeSlider), since
+      // facets only gives us a span, not the individual commit times.
+    }
+
+    async function reload() {
+      try {
+        // Facets first so the sidebar reflects the current slice.
+        const fr = await fetch(facetsBase + buildQs(filters, ["since", "until"]));
+        if (!fr.ok) throw new Error(`facets: ${fr.status}`);
+        const facetsData = await fr.json();
+        renderFilters(facetsData);
+        await k.fetchAndRender(testsBase + buildQs(filters));
+        setupTimeSlider();
+      } catch (e) {
+        status.textContent = "error: " + e.message;
+      }
+    }
+
+    // Commit-indexed time range slider. The slider's min/max are
+    // commit ordinals (0 .. N-1), so every commit occupies an equal
+    // slot regardless of how close in wall-clock time its neighbors
+    // are — same spacing as the X axis. Labels show the commit's
+    // date for readability. Built once on first render; on later
+    // reloads we just keep the existing DOM.
+    let _timeSliderBuilt = false;
+    let _sinceIdx = null;
+    let _untilIdx = null;
+    function setupTimeSlider() {
+      const runs = k._lastRuns;
+      if (!runs || runs.length === 0) return;
+      const uniq = new Set();
+      for (const r of runs) {
+        const t = (r.commit || {}).commit_time;
+        if (typeof t === "number") uniq.add(t * 1000);
+      }
+      const commitTimes = [...uniq].sort((a, b) => a - b);
+      const N = commitTimes.length;
+      if (N < 2) return;
+
+      // Default primary = min(3 months, last 300 commits) — whichever
+      // gives fewer commits in the window (tighter range).
+      const hi = commitTimes[N - 1];
+      const threeMonthsAgo = hi - 90 * 86400 * 1000;
+      let threeMonthsIdx = 0;
+      while (threeMonthsIdx < N && commitTimes[threeMonthsIdx] < threeMonthsAgo) threeMonthsIdx++;
+      const pointCapIdx = Math.max(0, N - 300);
+      const defaultSinceIdx = Math.max(threeMonthsIdx, pointCapIdx);
+
+      if (!_timeSliderBuilt) {
+        _timeSliderBuilt = true;
+        _sinceIdx = defaultSinceIdx;
+        _untilIdx = N - 1;
+        timeFilterEl.style.display = "block";
+        // Build a commit → {sha, author, message} index and a CP
+        // count per commit ts. These feed the per-tick labels above
+        // the slider (githash vertical, CP badge above if >0).
+        const commitMeta = new Map();  // ts -> {sha, author, message}
+        for (const r of runs) {
+          const c = r.commit || {};
+          if (typeof c.commit_time !== "number") continue;
+          const t = c.commit_time * 1000;
+          if (commitMeta.has(t)) continue;
+          const rawSha = c.short_sha || c.sha || "";
+          commitMeta.set(t, {
+            sha: rawSha.slice(0, 7),
+            author: c.author || "",
+            message: c.message || c.subject || "",
+          });
+        }
+        // CP count per commit — aurora exposes _changePoints with
+        // global commit-idx after a render. We sort commitTimes
+        // identically so `idx` maps 1:1.
+        const cpCountByIdx = new Map();
+        for (const cp of (k._changePoints || [])) {
+          cpCountByIdx.set(cp.idx, (cpCountByIdx.get(cp.idx) || 0) + 1);
+        }
+        // All N ticks exist in the DOM; visibility is toggled on
+        // mousemove. A fisheye around the pointer relaxes the min
+        // spacing so nearby commits crowd in, while far-from-pointer
+        // commits stay decimated. CP commits are always visible.
+        let ticksHtml = '<div class="slider-ticks" id="slider-ticks">';
+        const pctAt = (i) => (N > 1 ? (i / (N - 1)) * 100 : 50);
+        for (let i = 0; i < N; i++) {
+          const pct = pctAt(i);
+          const m = commitMeta.get(commitTimes[i]) || { sha: "", author: "", message: "" };
+          const cpN = cpCountByIdx.get(i) || 0;
+          const isCp = cpN > 0;
+          const title = [m.sha, m.author, m.message].filter(Boolean).join(" · ");
+          ticksHtml += `<div class="tick${isCp ? ' cp' : ''}" data-idx="${i}"`
+            + ` style="left:${pct}%" title="${title.replace(/"/g, "&quot;")}">`
+            + `<span class="cp-count">${cpN ? cpN : ""}</span>`
+            + `<span class="sha">${m.sha}</span>`
+            + `</div>`;
+        }
+        ticksHtml += '</div>';
+        // Fixed date markers. Four base anchors:
+        //   - left edge (oldest)
+        //   - symmetric = (N−1 − defaultSinceIdx), mirroring the
+        //     default-since offset around the midpoint
+        //   - defaultSinceIdx (where the left handle starts)
+        //   - right edge (newest)
+        //
+        // Then cascade additional markers at the same step inward
+        // from both ends until they meet in the middle — but only
+        // when default-since has a long tail behind it. Specifically
+        // when the time offset from the oldest commit to default-
+        // since covers at least 75% of the total timeline — i.e.
+        // the primary window is a small recent slice and there's
+        // a long past to fill with evenly-spaced labels. On repos
+        // where default-since already sits near the start, step is
+        // large compared to the total and cascading would collapse.
+        const step = (N - 1) - defaultSinceIdx;
+        const symmetricIdx = step;
+        const markerIdxSet = new Set([
+          0,
+          symmetricIdx,
+          defaultSinceIdx,
+          N - 1,
+        ]);
+        const tMin = commitTimes[0];
+        const tMax = commitTimes[N - 1];
+        const tSince = commitTimes[defaultSinceIdx];
+        const totalSpan = Math.max(1, tMax - tMin);
+        const sinceOffset = tSince - tMin;
+        if (step > 0 && sinceOffset >= 0.75 * totalSpan) {
+          for (let k = 2; ; k++) {
+            const leftI  = k * step;
+            const rightI = (N - 1) - k * step;
+            if (leftI >= rightI) break;
+            markerIdxSet.add(leftI);
+            markerIdxSet.add(rightI);
+          }
+        }
+        const markerIdxs = [...markerIdxSet].sort((a, b) => a - b);
+        const pct = (i) => (N > 1 ? (i / (N - 1)) * 100 : 50);
+        const labelHtml = markerIdxs.map((i, pos) => {
+          const cls = pos === 0 ? "lbl edge-left"
+                    : pos === markerIdxs.length - 1 ? "lbl edge-right"
+                    : "lbl";
+          return `<span class="${cls}" style="left:${pct(i)}%">`
+               + `${fmtDay(commitTimes[i])}</span>`;
+        }).join("");
+        timeFilterEl.innerHTML = `
+          ${ticksHtml}
+          <div class="slider-wrap">
+            <input id="f-since" type="range" min="0" max="${N - 1}" step="1" value="${_sinceIdx}">
+            <input id="f-until" type="range" min="0" max="${N - 1}" step="1" value="${_untilIdx}">
+          </div>
+          <div class="slider-labels">${labelHtml}</div>
+        `;
+        const sinceEl = timeFilterEl.querySelector("#f-since");
+        const untilEl = timeFilterEl.querySelector("#f-until");
+        const update = () => {
+          let s = +sinceEl.value, u = +untilEl.value;
+          if (s > u) {
+            if (document.activeElement === sinceEl) untilEl.value = s;
+            else sinceEl.value = u;
+          }
+        };
+        const applyWindow = () => {
+          _sinceIdx = +sinceEl.value;
+          _untilIdx = +untilEl.value;
+          // Pad the window by half a commit-interval on each side so
+          // boundary commits (which sit exactly on sinceIdx/untilIdx)
+          // aren't pushed off by rounding.
+          const pad = Math.max(1, commitTimes[1] - commitTimes[0]) / 2;
+          const sinceMs = (_sinceIdx > 0) ? commitTimes[_sinceIdx] - pad : null;
+          const untilMs = (_untilIdx < N - 1) ? commitTimes[_untilIdx] + pad : null;
+          k.setPrimaryWindow(sinceMs, untilMs);
+        };
+        sinceEl.addEventListener("input", update);
+        untilEl.addEventListener("input", update);
+        sinceEl.addEventListener("change", applyWindow);
+        untilEl.addEventListener("change", applyWindow);
+        // Apply the default window to the already-rendered scene.
+        applyWindow();
+
+        // Fisheye tick visibility. All N tick DOM nodes exist; we
+        // show a subset depending on whether the mouse is hovering
+        // the slider area and how close each tick is to the cursor.
+        const ticksEl = timeFilterEl.querySelector(".slider-ticks");
+        const cpIdxArr = [...cpCountByIdx.keys()].sort((a, b) => a - b);
+        const allTickEls = [...ticksEl.querySelectorAll(".tick")];
+        const trackPx = () => Math.max(400, timeFilterEl.clientWidth - 32);
+        const MIN_PX = 14;             // baseline far from mouse (larger = more prune at ends)
+        const MIN_PX_NEAR = MIN_PX * 0.4;  // floor near mouse (not 0 — keeps SHAs readable)
+        const ZOOM_RADIUS = 36;        // pct; inside this the fisheye kicks in
+
+        // Mouse position along the ticks bar in percent (0..100),
+        // or null when the mouse isn't over the time-filter panel.
+        let mouseXPct = null;
+        let rafPending = false;
+
+        function recompute() {
+          rafPending = false;
+          const tpx = trackPx();
+          const minPct = (MIN_PX / tpx) * 100;
+          const minPctNear = (MIN_PX_NEAR / tpx) * 100;
+          const picked = new Array(N).fill(false);
+          // Always: CP commits + endpoints.
+          for (const i of cpIdxArr) picked[i] = true;
+          picked[0] = true;
+          picked[N - 1] = true;
+          // Iterate non-CP commits in priority order (near mouse first
+          // if a mouse position is set; otherwise left-to-right) and
+          // include them whenever the local min spacing is satisfied.
+          // Near the mouse, effective minPct tapers to 0 — so adjacent
+          // commits in the zoom window always fit.
+          const order = [];
+          for (let i = 0; i < N; i++) if (!picked[i]) order.push(i);
+          if (mouseXPct != null) {
+            order.sort((a, b) => Math.abs(pctAt(a) - mouseXPct) - Math.abs(pctAt(b) - mouseXPct));
+          }
+          // Sorted list of already-picked positions for gap checks.
+          const pickedIdx = [];
+          for (let i = 0; i < N; i++) if (picked[i]) pickedIdx.push(i);
+          const pickedPos = pickedIdx.map(pctAt);
+          const insertPos = (p) => {
+            let lo = 0, hi = pickedPos.length;
+            while (lo < hi) {
+              const m = (lo + hi) >> 1;
+              if (pickedPos[m] < p) lo = m + 1; else hi = m;
+            }
+            pickedPos.splice(lo, 0, p);
+          };
+          for (const i of order) {
+            const p = pctAt(i);
+            // Local min spacing tapers from minPctNear (at mouse) up
+            // to minPct (at ZOOM_RADIUS and beyond). Never goes to
+            // zero — SHAs must stay readable even at the focal point.
+            const dist = mouseXPct != null ? Math.abs(p - mouseXPct) : Infinity;
+            const localMin = mouseXPct != null
+              ? minPctNear + (minPct - minPctNear) * Math.min(1, dist / ZOOM_RADIUS)
+              : minPct;
+            let lo = 0, hi = pickedPos.length;
+            while (lo < hi) {
+              const m = (lo + hi) >> 1;
+              if (pickedPos[m] < p) lo = m + 1; else hi = m;
+            }
+            const left = lo > 0 ? pickedPos[lo - 1] : -Infinity;
+            const right = lo < pickedPos.length ? pickedPos[lo] : Infinity;
+            if ((p - left) >= localMin && (right - p) >= localMin) {
+              picked[i] = true;
+              pickedPos.splice(lo, 0, p);
+            }
+          }
+          for (let i = 0; i < N; i++) {
+            allTickEls[i].classList.toggle("hidden", !picked[i]);
+          }
+        }
+        function requestRecompute() {
+          if (rafPending) return;
+          rafPending = true;
+          requestAnimationFrame(recompute);
+        }
+
+        timeFilterEl.addEventListener("mousemove", (e) => {
+          const rect = ticksEl.getBoundingClientRect();
+          const pct = ((e.clientX - rect.left) / rect.width) * 100;
+          mouseXPct = Math.max(0, Math.min(100, pct));
+          requestRecompute();
+        });
+        timeFilterEl.addEventListener("mouseleave", () => {
+          mouseXPct = null;
+          requestRecompute();
+          // Clear the 3D cursor when the mouse leaves the slider bar,
+          // mirroring what happens when it leaves the scene.
+          k.clearHover();
+        });
+        // Hovering a tick drives the 3D cursor just like hovering a
+        // data point. Clicking locks that commit (replaces any
+        // existing lock).
+        for (const el of allTickEls) {
+          const idx = +el.dataset.idx;
+          el.addEventListener("mouseenter", () => k.hoverCommitByIdx(idx));
+          el.addEventListener("click", () => k.lockCommitByIdx(idx));
+        }
+        window.addEventListener("resize", requestRecompute);
+        recompute();
+      }
+    }
+
+    // Skip initial data load when landing overlay is up — the user
+    // will pick a repo via one of the two paths.
+    if (hasRepo) void reload();
+  </script>
+</body>
+</html>

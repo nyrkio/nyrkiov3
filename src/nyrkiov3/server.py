@@ -14,7 +14,7 @@ Env vars (all optional unless noted):
                                ``/`` (index.html, app assets). Omit to
                                run API-only.
 - ``NYRKIO_AURORA_DIR``        path to AuroraBorealis/static/ — mounted
-                               at ``/aurora/`` (the 3D library files).
+                               at ``/js/lib/aurora/`` (the 3D library).
                                Required when NYRKIO_STATIC_DIR is set.
 - ``NYRKIO_BIND``              host:port (default ``127.0.0.1:8123``).
                                Stay on localhost when nginx or another
@@ -58,8 +58,8 @@ def main() -> int:
         print(f"static: serving {static_dir} at /")
     aurora_dir = os.environ.get("NYRKIO_AURORA_DIR")
     if aurora_dir and os.path.isdir(aurora_dir):
-        app.static("/aurora", aurora_dir)
-        print(f"static: serving {aurora_dir} at /aurora/")
+        app.static("/js/lib/aurora", aurora_dir)
+        print(f"static: serving {aurora_dir} at /js/lib/aurora/")
     # Bind address. Keep on localhost when a same-host reverse proxy
     # fronts the app. When nginx runs inside Docker on Linux and the
     # app runs on the host, you'll typically need to bind on the

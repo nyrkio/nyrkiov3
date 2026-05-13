@@ -1188,7 +1188,7 @@
         valLabels.sort((a, b) => {
           const ziA = ziMap.get(a.querySelector('input.val')?.value) ?? -1;
           const ziB = ziMap.get(b.querySelector('input.val')?.value) ?? -1;
-          return ziB - ziA;
+          return ziA - ziB;
         });
         for (const lbl of valLabels) rows.appendChild(lbl);
       }

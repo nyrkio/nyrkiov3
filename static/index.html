@@ -1570,6 +1570,7 @@
             if (_windowUntilMs !== null)
               fetchFilters.until = new Date(_windowUntilMs).toISOString();
             await k.fetchAndRender(testsBase + buildQs(fetchFilters));
+            syncFilterOrder();
             refreshTickMeta();
           }
 

@@ -186,7 +186,8 @@
                        overflow-y: auto; min-height: 0; flex: 1 1 auto; }
     #filters .radios label { display: flex; align-items: center; gap: 6px; cursor: pointer;
                              max-width: 260px; white-space: nowrap; overflow: hidden;
-                             text-overflow: ellipsis; }
+                             text-overflow: ellipsis; color: inherit; }
+    #filters .radios label:hover { color: var(--series-color, #78c8ff); }
     #filters input[type="radio"] { margin: 0; accent-color: #78c8ff; }
     #filters input[type="checkbox"].val {
       appearance: none; -webkit-appearance: none;
@@ -1225,7 +1226,8 @@
           const color = colorMap?.get(val);
           if (color != null) {
             const css = "#" + (color >>> 0).toString(16).padStart(6, "0");
-            lbl.style.color = css;
+            lbl.style.setProperty('--series-color', css);
+            lbl.style.color = "";
             const inp = lbl.querySelector('input.val');
             if (inp) inp.style.borderColor = css;
           }

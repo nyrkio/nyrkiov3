@@ -1193,12 +1193,16 @@
         });
         for (const lbl of valLabels) {
           const val   = lbl.querySelector('input.val')?.value;
-          const color = colorMap?.get(val);
-          if (color != null) {
-            const css = "#" + (color >>> 0).toString(16).padStart(6, "0");
-            lbl.style.color = css;
-            const inp = lbl.querySelector('input.val');
-            if (inp) inp.style.accentColor = css;
+          const inWindow = ziMap.has(val);
+          lbl.style.display = inWindow ? "" : "none";
+          if (inWindow) {
+            const color = colorMap?.get(val);
+            if (color != null) {
+              const css = "#" + (color >>> 0).toString(16).padStart(6, "0");
+              lbl.style.color = css;
+              const inp = lbl.querySelector('input.val');
+              if (inp) inp.style.accentColor = css;
+            }
           }
           rows.appendChild(lbl);
         }

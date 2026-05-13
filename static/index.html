@@ -1161,6 +1161,39 @@
       // facets only gives us a span, not the individual commit times.
     }
 
+    function syncFilterOrder() {
+      if (!k._seriesInfo?.length) return;
+      // Build dim → (val → max zi) from all rendered series.
+      // A metric appearing in multiple series (e.g. across test_names) gets
+      // ranked by its highest zi so the most-volatile representative wins.
+      const dimMaxZi = {};
+      for (const s of k._seriesInfo) {
+        if (!s?.dimValues) continue;
+        for (const [dim, val] of Object.entries(s.dimValues)) {
+          if (!dimMaxZi[dim]) dimMaxZi[dim] = new Map();
+          const cur = dimMaxZi[dim].get(val) ?? -1;
+          if (s.zi > cur) dimMaxZi[dim].set(val, s.zi);
+        }
+      }
+      // Re-order each filter group's per-value rows (highest zi → top).
+      // The "all" label is left in place; only .val rows are moved.
+      for (const group of filtersEl.querySelectorAll('.group')) {
+        const dim = group.querySelector('.group-title')?.textContent?.trim();
+        const ziMap = dimMaxZi[dim];
+        if (!ziMap?.size) continue;
+        const rows = group.querySelector('.radios');
+        if (!rows) continue;
+        const valLabels = [...rows.querySelectorAll('input.val')]
+          .map(i => i.closest('label')).filter(Boolean);
+        valLabels.sort((a, b) => {
+          const ziA = ziMap.get(a.querySelector('input.val')?.value) ?? -1;
+          const ziB = ziMap.get(b.querySelector('input.val')?.value) ?? -1;
+          return ziB - ziA;
+        });
+        for (const lbl of valLabels) rows.appendChild(lbl);
+      }
+    }
+
     async function reload() {
       try {
         const facetsData = await apiFetch(facetsBase + buildQs(filters, ["since", "until"]));
@@ -1194,6 +1227,7 @@
           }
         }
         await k.fetchAndRender(testsBase + buildQs(fetchFilters));
+        syncFilterOrder();
         setupTimeSlider();
       } catch (e) {
         status.textContent = "error: " + e.message;

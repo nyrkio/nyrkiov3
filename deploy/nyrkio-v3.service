@@ -10,7 +10,9 @@ WorkingDirectory=/opt/nyrkio-v3/nyrkiov3
 # uv runs the app under the project-managed venv + Python 3.14(t).
 # Replace `python3.14t` with `python3.14` if you want the GIL build.
 ExecStart=/usr/local/bin/uv run --python 3.14t python -m nyrkiov3.server
-EnvironmentFile=/etc/nyrkio-v3/env
+# Configuration is auto-loaded from /etc/nyrkiov3/{config,secrets}.yml
+# by nyrkio-serve itself. No EnvironmentFile here — pass --config to
+# the command line if you want to point at a different file.
 # Keep .pyc files out of the source tree so the code install can stay
 # read-only and a `git pull` doesn't fight with stale bytecode.
 Environment=PYTHONPYCACHEPREFIX=/var/lib/nyrkio-v3/pycache

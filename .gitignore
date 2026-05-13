@@ -5,3 +5,9 @@ __pycache__/
 .venv/
 build/
 dist/
+# Local-dev config (paths point at the dev's checkout); auto-discovered
+# from CWD by jsonee.config. Use deploy/config.example.yml as a template.
+nyrkiov3.yml
+nyrkiov3-secrets.yml
+# Editor swap files.
+*.swp

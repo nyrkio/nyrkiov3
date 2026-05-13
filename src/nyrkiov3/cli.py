@@ -3,19 +3,21 @@
     nyrkio-sync --repo unodb-dev/unodb --workflow benchmarks.yml \
                 --parser google-benchmark/text --step "Run benchmarks"
 
-Reads the token from ``$CLAUDE_GITHUB_PAT`` (or ``$GITHUB_TOKEN``) and
-writes straight to the configured store's snapshot path. Intended for
-manual backfills; the webhook path is the long-term answer."""
+Configuration goes through ``nyrkiov3.config.load_sync_config``: CLI
+flags, ``NYRKIO_*`` env vars, or YAML config files (see
+``config.py``). The GitHub token can come from ``--github-token``,
+``$NYRKIO_APP_GITHUB_PAT``, ``$CLAUDE_GITHUB_PAT``, or
+``$GITHUB_TOKEN`` — whichever is set first wins.
+
+Writes straight to the configured snapshot path. Intended for manual
+backfills; the webhook path is the long-term answer."""
 from __future__ import annotations
 
-import argparse
-import importlib
 import logging
 import os
 import sys
 
-from .app import DEFAULT_SNAPSHOT_PATH, DEFAULT_SNAPSHOT_INTERVAL_S
-from .github_ingest import GitHubClient, ingest_workflow_history
+from .config import load_sync_config
 
 
 def _resolve_parser(spec: str):
@@ -34,63 +36,50 @@ def _resolve_parser(spec: str):
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="nyrkio-sync",
-                                 description=__doc__.splitlines()[0])
-    ap.add_argument("--repo", required=True,
-                    help="owner/repo, e.g. unodb-dev/unodb")
-    ap.add_argument("--workflow", required=True,
-                    help="workflow filename, e.g. benchmarks.yml")
-    ap.add_argument("--parser", required=True,
-                    help="benchzoo parser spec, e.g. google-benchmark/text")
-    ap.add_argument("--step", default=None,
-                    help="optional ##[group] step name to slice the log to")
-    ap.add_argument("--branch", default=None)
-    ap.add_argument("--max-pages", type=int, default=5)
-    ap.add_argument("--snapshot-path", default=DEFAULT_SNAPSHOT_PATH)
-    ap.add_argument("--snapshot-interval", type=float,
-                    default=DEFAULT_SNAPSHOT_INTERVAL_S)
-    ap.add_argument("-v", "--verbose", action="count", default=0)
-    args = ap.parse_args(argv)
+    cfg = load_sync_config(argv)
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose >= 2 else
-              logging.INFO if args.verbose else logging.WARNING,
+        level=logging.DEBUG if cfg["verbose"] >= 2 else
+              logging.INFO if cfg["verbose"] else logging.WARNING,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    if "/" not in args.repo:
+    if "/" not in cfg["repo"]:
         raise SystemExit("--repo expects owner/repo")
-    owner, repo = args.repo.split("/", 1)
+    owner, repo = cfg["repo"].split("/", 1)
 
-    token = os.environ.get("CLAUDE_GITHUB_PAT") or os.environ.get("GITHUB_TOKEN")
-    if not token:
+    if not cfg["github_token"]:
         raise SystemExit(
-            "no GitHub token in $CLAUDE_GITHUB_PAT or $GITHUB_TOKEN")
+            "no GitHub token: pass --github-token, set NYRKIO_APP_GITHUB_PAT, "
+            "CLAUDE_GITHUB_PAT, or GITHUB_TOKEN"
+        )
 
-    parser = _resolve_parser(args.parser)
+    parser = _resolve_parser(cfg["parser"])
 
-    # Use the store directly, not HTTP ingest, so we skip the HTTP hop
-    # for a local CLI invocation.
+    # Local store — skip the HTTP hop for a CLI invocation. Imported
+    # lazily so `nyrkio-sync -h` doesn't pay the jsonee import cost.
     from jsonee import InMemoryStore
-    os.makedirs(os.path.dirname(args.snapshot_path), exist_ok=True)
-    store = InMemoryStore(snapshot_path=args.snapshot_path,
-                          snapshot_interval_s=args.snapshot_interval)
-    client = GitHubClient(token)
+    from .github_ingest import GitHubClient, ingest_workflow_history
+
+    snapshot_path = cfg["snapshot_path"]
+    os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
+    store = InMemoryStore(snapshot_path=snapshot_path,
+                          snapshot_interval_s=cfg["snapshot_interval"])
+    client = GitHubClient(cfg["github_token"])
 
     summary = ingest_workflow_history(
         client=client, store=store,
         owner=owner, repo=repo,
-        workflow_filename=args.workflow,
+        workflow_filename=cfg["workflow"],
         parser=parser,
-        step_name=args.step,
-        branch=args.branch,
-        max_pages=args.max_pages,
+        step_name=cfg["step"],
+        branch=cfg["branch"],
+        max_pages=cfg["max_pages"],
     )
-    # Final flush (stop also triggers snapshot).
-    store.stop()
+    store.stop()  # final flush
     print(f"{summary['runs_seen']} workflow runs walked, "
           f"{summary['benchmarks_inserted']} benchmarks inserted into "
-          f"{args.snapshot_path}")
+          f"{snapshot_path}")
     return 0
 
 

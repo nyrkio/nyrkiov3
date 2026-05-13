@@ -22,7 +22,7 @@ sudo useradd --system --home-dir /opt/nyrkio-v3 --shell /usr/sbin/nologin nyrkio
 ## 2. Code + data dirs
 
 ```bash
-sudo mkdir -p /opt/nyrkio-v3 /var/lib/nyrkio-v3 /etc/nyrkio-v3
+sudo mkdir -p /opt/nyrkio-v3 /var/lib/nyrkio-v3 /etc/nyrkiov3
 sudo chown nyrkio:nyrkio /var/lib/nyrkio-v3
 sudo -u nyrkio -H bash -c 'cd /opt/nyrkio-v3 && \
   git clone https://github.com/nyrkio/nyrkiov3       nyrkiov3 && \
@@ -38,22 +38,27 @@ cd /opt/nyrkio-v3/nyrkiov3
 sudo -u nyrkio -H uv sync --python 3.14t
 ```
 
-## 3. Secrets / env
+## 3. Config + secrets
 
 Register a GitHub OAuth app at https://github.com/settings/applications/new
 with callback `https://staging.nyrkio.com/v3/oauth/callback`. Grab the
 client id + secret.
 
 ```bash
+sudo install -o root -g root -m 0644 \
+  /opt/nyrkio-v3/nyrkiov3/deploy/config.example.yml /etc/nyrkiov3/config.yml
 sudo install -o root -g root -m 0600 \
-  /opt/nyrkio-v3/nyrkiov3/deploy/env.example /etc/nyrkio-v3/env
-sudoedit /etc/nyrkio-v3/env
-# Fill in:
-#   NYRKIO_GITHUB_CLIENT_ID=...
-#   NYRKIO_GITHUB_CLIENT_SECRET=...
-#   NYRKIO_SESSION_SECRET=$(openssl rand -hex 32)
-#   NYRKIO_APP_GITHUB_PAT=...
+  /opt/nyrkio-v3/nyrkiov3/deploy/secrets.example.yml /etc/nyrkiov3/secrets.yml
+sudoedit /etc/nyrkiov3/config.yml    # non-secret tuning
+sudoedit /etc/nyrkiov3/secrets.yml   # fill in:
+#   github-client-secret: ...
+#   session-secret: ...   (openssl rand -hex 32)
+#   app-github-pat: ...
 ```
+
+`nyrkio-serve` auto-discovers `/etc/nyrkiov3/{config,secrets}.yml`;
+no flag needed. CLI flags or `NYRKIO_*` env vars still override the
+files when set.
 
 ## 4. Systemd
 
@@ -82,7 +87,8 @@ docker network inspect <project-net> | grep Gateway   # if compose uses its own
 
 It's commonly `172.17.0.1`, but compose stacks often allocate their
 own subnets like `172.18.0.1` or `172.7.0.1`. Put whatever you see
-into both the `NYRKIO_BIND` env var and the nginx `proxy_pass` target.
+into both the `bind:` config key (or `NYRKIO_BIND` env var) and the
+nginx `proxy_pass` target.
 
 > `host.docker.internal` works on Docker Desktop (Mac/Windows) but
 > NOT on native Linux Docker, even with `extra_hosts: host-gateway`

@@ -221,19 +221,28 @@ def _finalise_run(raw, *, repo_id, absolute, default_source):
     return doc
 
 
-def build_app(store=None, recent_cp_days=14, storage_path=None):
+def build_app(store=None, recent_cp_days=14, storage_path=None,
+              mongo_uri=None, mongo_db=None, auth_config=None):
     """Build the v0 nyrkio app.
 
     - ``store``: pre-built store (tests, explicit InMemoryStore). When
       omitted the app calls open_store() which:
-        • uses NYRKIO_MONGO_URI if set (real MongoDB or FerretDB)
+        • uses ``mongo_uri`` (or NYRKIO_MONGO_URI) if set
         • otherwise starts embedded secantusdb at ``storage_path``
           (ephemeral in-memory when storage_path is None, persisted otherwise)
     - ``storage_path``: directory for embedded secantusdb data. Ignored when
-      NYRKIO_MONGO_URI is set or a ``store`` is passed explicitly.
+      a mongo URI is provided or a ``store`` is passed explicitly.
+    - ``auth_config``: dict with ``client_id``, ``client_secret``,
+      ``session_secret``, ``base_url``. Falls back to ``NYRKIO_*`` env
+      vars when absent (tests that don't care about auth can omit it).
     """
     if store is None:
-        store = open_store(storage_path=storage_path)
+        # open_store reads NYRKIO_MONGO_DB itself; surface mongo_db
+        # through the env so a JsonEE bump isn't required for this
+        # one knob. Don't clobber an externally-set value.
+        if mongo_db and not os.environ.get("NYRKIO_MONGO_DB"):
+            os.environ["NYRKIO_MONGO_DB"] = mongo_db
+        store = open_store(storage_path=storage_path, uri=mongo_uri)
     app = JsonEE(schema_registry=SCHEMAS)
     app.store = store  # attach for tests / handlers
     # Background executor for work that shouldn't block HTTP handlers —
@@ -257,7 +266,10 @@ def build_app(store=None, recent_cp_days=14, storage_path=None):
     # Public-facing base URL Nyrkiö is served from. Hardcoded so we
     # can register the OAuth callback and webhook URLs with GitHub once
     # and forget. For local dev override with NYRKIO_BASE_URL.
-    app.auth_config = {
+    # auth_config is either supplied by the caller (server.py, after
+    # nyrkiov3.config.load_serve_config) or filled from env vars so
+    # tests / demos that hand-build the app still work.
+    app.auth_config = dict(auth_config) if auth_config else {
         "client_id": os.environ.get("NYRKIO_GITHUB_CLIENT_ID", ""),
         "client_secret": os.environ.get("NYRKIO_GITHUB_CLIENT_SECRET", ""),
         "session_secret": os.environ.get("NYRKIO_SESSION_SECRET", ""),

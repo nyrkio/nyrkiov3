@@ -13,6 +13,8 @@ description = "Nyrkiö v3: benchmark ingest, change detection, and query service
 # above will work on older interpreters.
 requires-python = ">=3.14"
 dependencies = [
+    # jsonee.config provides the ConfigArgParse-based loader used by
+    # both consoles (nyrkio-serve, nyrkio-sync).
     "jsonee",
     "purejson",
     "extjson",

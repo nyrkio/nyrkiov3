@@ -1,0 +1,46 @@
+# Nyrkiö v3 service configuration. Discovery order (lowest priority
+# first; later files override earlier ones, env vars override the
+# files, CLI flags override everything):
+#
+#   /etc/nyrkiov3/config.yml      ← this file, for system installs
+#   /etc/nyrkiov3/secrets.yml     ← root-readable, mode 0600
+#   ~/.nyrkiov3/config.yml
+#   ~/.nyrkiov3/secrets.yml
+#   ./nyrkiov3.yml
+#   ./nyrkiov3-secrets.yml
+#
+# Keys use kebab-case to match the CLI flags (--bind, --static-dir).
+# See `nyrkio-serve --help` for the full list.
+
+# Public origin + path the service is served from. MUST include the
+# /v3 prefix because nginx path-routes /v3/* to this backend.
+base-url: https://staging.nyrkio.com/v3
+
+# Where secantusdb keeps its WiredTiger data. Must be writable by the
+# systemd User= (nyrkio). The directory is listed in ReadWritePaths=
+# of the unit file. Set mongo-uri instead to use external MongoDB or
+# FerretDB.
+storage-path: /var/lib/nyrkio-v3/secantus
+
+# Path to nyrkiov3/static/ — the app shell (index.html, assets).
+# Served at /.
+static-dir: /opt/nyrkio-v3/nyrkiov3/static
+
+# Path to AuroraBorealis/static/ — the 3D visualisation library.
+# Served at /js/lib/aurora/. Clone the AuroraBorealis repo and
+# point here.
+aurora-dir: /opt/nyrkio-v3/AuroraBorealis/static
+
+# Bind address.
+# If nginx runs on the same host NOT inside a container, keep this on
+# 127.0.0.1 — the loopback stays private to the host.
+# If nginx runs inside Docker (the existing staging setup does), the
+# container can't reach the host's 127.0.0.1. Bind on the Docker
+# bridge IP instead (check with `docker network inspect`):
+#   bind: 172.17.0.1:8123   # default bridge
+# Or bind on 0.0.0.0 and rely on firewalling for privacy.
+bind: 172.17.0.1:8123
+
+# Public part of the GitHub OAuth app credentials. The matching
+# client-secret goes in secrets.yml.
+github-client-id: ""

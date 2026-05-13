@@ -1163,34 +1163,45 @@
 
     function syncFilterOrder() {
       if (!k._seriesInfo?.length) return;
-      // Build dim → (val → max zi) from all rendered series.
-      // A metric appearing in multiple series (e.g. across test_names) gets
-      // ranked by its highest zi so the most-volatile representative wins.
+      // Build dim → (val → {zi, color}) tracking the max-zi series per value.
       const dimMaxZi = {};
+      const dimColor  = {};
       for (const s of k._seriesInfo) {
         if (!s?.dimValues) continue;
         for (const [dim, val] of Object.entries(s.dimValues)) {
-          if (!dimMaxZi[dim]) dimMaxZi[dim] = new Map();
+          if (!dimMaxZi[dim]) { dimMaxZi[dim] = new Map(); dimColor[dim] = new Map(); }
           const cur = dimMaxZi[dim].get(val) ?? -1;
-          if (s.zi > cur) dimMaxZi[dim].set(val, s.zi);
+          if (s.zi > cur) {
+            dimMaxZi[dim].set(val, s.zi);
+            if (s.color) dimColor[dim].set(val, s.color);
+          }
         }
       }
-      // Re-order each filter group's per-value rows (highest zi → top).
-      // The "all" label is left in place; only .val rows are moved.
       for (const group of filtersEl.querySelectorAll('.group')) {
         const dim = group.querySelector('.group-title')?.textContent?.trim();
-        const ziMap = dimMaxZi[dim];
+        const ziMap    = dimMaxZi[dim];
+        const colorMap = dimColor[dim];
         if (!ziMap?.size) continue;
         const rows = group.querySelector('.radios');
         if (!rows) continue;
         const valLabels = [...rows.querySelectorAll('input.val')]
           .map(i => i.closest('label')).filter(Boolean);
         valLabels.sort((a, b) => {
-          const ziA = ziMap.get(a.querySelector('input.val')?.value) ?? -1;
-          const ziB = ziMap.get(b.querySelector('input.val')?.value) ?? -1;
+          const ziA = ziMap.get(a.querySelector('input.val')?.value) ?? Infinity;
+          const ziB = ziMap.get(b.querySelector('input.val')?.value) ?? Infinity;
           return ziA - ziB;
         });
-        for (const lbl of valLabels) rows.appendChild(lbl);
+        for (const lbl of valLabels) {
+          const val   = lbl.querySelector('input.val')?.value;
+          const color = colorMap?.get(val);
+          if (color != null) {
+            const css = "#" + (color >>> 0).toString(16).padStart(6, "0");
+            lbl.style.color = css;
+            const inp = lbl.querySelector('input.val');
+            if (inp) inp.style.accentColor = css;
+          }
+          rows.appendChild(lbl);
+        }
       }
     }
 

@@ -1454,7 +1454,7 @@
         };
 
         // SHA strip drag / pan.
-        let _shaDragActive = false, _shaDragStartX = 0, _shaDragStartOff = 0;
+        let _shaDragActive = false, _shaDragMoved = false, _shaDragStartX = 0, _shaDragStartOff = 0;
 
         const applyShaScroll = (newOff) => {
           const inner = shaTicksEl.querySelector(".sha-inner");
@@ -1467,14 +1467,15 @@
 
         shaTicksEl.addEventListener("mousedown", (e) => {
           _shaDragActive   = true;
+          _shaDragMoved    = false;
           _shaDragStartX   = e.clientX;
           _shaDragStartOff = shaScrollOffset;
           shaTicksEl.classList.add("dragging");
           timeFilterEl.classList.add("sha-dragging");
-          e.preventDefault();
         });
         document.addEventListener("mousemove", (e) => {
           if (!_shaDragActive) return;
+          if (Math.abs(e.clientX - _shaDragStartX) > 3) _shaDragMoved = true;
           applyShaScroll(_shaDragStartOff + (e.clientX - _shaDragStartX));
         });
         document.addEventListener("mouseup", () => {
@@ -1633,6 +1634,7 @@
           if (tick) k.hoverCommitByIdx(+tick.dataset.idx);
         });
         shaTicksEl.addEventListener("click", (e) => {
+          if (_shaDragMoved) return;
           const tick = e.target.closest(".tick");
           if (tick) k.lockCommitByIdx(+tick.dataset.idx);
         });

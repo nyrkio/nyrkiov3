@@ -482,7 +482,7 @@ def build_app(store=None, recent_cp_days=14, storage_path=None):
         the store is public-only. When we add private repos, this
         needs to filter by visibility (or per-user auth)."""
         by_repo: dict = {}
-        for d in (Document(r) for r in runs.find({})):
+        for d in runs.find({}):
             abs_name = d.get("absolute_name", "")
             if not abs_name:
                 continue
@@ -769,7 +769,7 @@ def build_app(store=None, recent_cp_days=14, storage_path=None):
         if ts_filter:
             filter_["commit.commit_time"] = ts_filter
 
-        hits = [Document(d) for d in runs.find(filter_, sort={"commit.commit_time": 1})]
+        hits = runs.find(filter_, sort={"commit.commit_time": 1})
 
         # metric= narrows each run's metrics list. Repeated params
         # (``?metric=a&metric=b``) keep any matching name; missing →
@@ -836,7 +836,7 @@ def build_app(store=None, recent_cp_days=14, storage_path=None):
         q = request["query"]
         filter_ = {"absolute_name": absolute}
         _apply_facet_filters(filter_, q)
-        hits = [Document(d) for d in runs.find(filter_)]
+        hits = runs.find(filter_)
         dim_values: dict[str, set] = {}
 
         def _bump(key, val):

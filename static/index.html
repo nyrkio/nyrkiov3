@@ -1339,9 +1339,11 @@
 
         const buildShaTicks = () => {
           const commits = [];
+          const seenShas = new Set();
           for (let i = _sinceIdx; i <= _untilIdx; i++) {
             const m = metaMap.get(commitTimes[i]);
-            if (!m || !m.sha) continue;
+            if (!m || !m.sha || seenShas.has(m.sha)) continue;
+            seenShas.add(m.sha);
             commits.push({ i, m });
           }
           shaTotalW = commits.length * SHA_W;
@@ -1470,17 +1472,17 @@
 
         const refreshTickMeta = () => {
           metaMap = new Map();
+          const seenShasMeta = new Set();
           for (const r of (k._lastRuns || [])) {
             const c = r.commit || {};
             if (typeof c.commit_time !== "number") continue;
             const t = c.commit_time * 1000;
             if (metaMap.has(t)) continue;
             const rawSha = c.short_sha || c.sha || "";
-            metaMap.set(t, {
-              sha: rawSha.slice(0, 7),
-              author: c.author || "",
-              message: c.message || c.subject || "",
-            });
+            const sha7 = rawSha.slice(0, 7);
+            if (seenShasMeta.has(sha7)) continue;
+            seenShasMeta.add(sha7);
+            metaMap.set(t, { sha: sha7, author: c.author || "", message: c.message || c.subject || "" });
           }
           // Map windowed CP indices → global commitTimes indices.
           const windowedTimes = [...new Set(

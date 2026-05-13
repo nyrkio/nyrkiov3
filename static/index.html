@@ -1417,6 +1417,10 @@
         shaTicksEl.addEventListener("touchend", () => {
           timeFilterEl.classList.remove("sha-dragging");
         }, { passive: true });
+        shaTicksEl.addEventListener("wheel", (e) => {
+          e.preventDefault();
+          applyShaScroll(shaScrollOffset - (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY));
+        }, { passive: false });
 
         const buildDatesAbove = () => {
           const si = +sinceEl.value;

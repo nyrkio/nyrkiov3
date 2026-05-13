@@ -1077,6 +1077,7 @@
     // wants to switch back.
     let _filtersRendered = false;
     let _filterOrderSet  = false;
+    let _windowMask = {}; // dim → Set<val> of values present in current time window
     function renderFilters(facetsData) {
       timeFilterEl.innerHTML = "";
       const span = facetsData.timestamp_span;
@@ -1193,6 +1194,14 @@
           }
         }
       }
+      // Rebuild window mask on time-window changes; freeze it on filter changes
+      // so selecting one metric doesn't hide the others.
+      if (reorder) {
+        _windowMask = {};
+        for (const [dim, ziMap] of Object.entries(dimMaxZi)) {
+          _windowMask[dim] = new Set(ziMap.keys());
+        }
+      }
       for (const group of filtersEl.querySelectorAll('.group')) {
         const dim = group.querySelector('.group-title')?.textContent?.trim();
         const ziMap    = dimMaxZi[dim];
@@ -1200,6 +1209,7 @@
         if (!ziMap?.size) continue;
         const rows = group.querySelector('.radios');
         if (!rows) continue;
+        const mask = _windowMask[dim];
         const valLabels = [...rows.querySelectorAll('input.val')]
           .map(i => i.closest('label')).filter(Boolean);
         if (reorder) {
@@ -1210,8 +1220,8 @@
           });
         }
         for (const lbl of valLabels) {
-          const val   = lbl.querySelector('input.val')?.value;
-          lbl.style.display = "";
+          const val = lbl.querySelector('input.val')?.value;
+          lbl.style.display = (!mask || mask.has(val)) ? "" : "none";
           const color = colorMap?.get(val);
           if (color != null) {
             const css = "#" + (color >>> 0).toString(16).padStart(6, "0");

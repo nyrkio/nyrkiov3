@@ -782,7 +782,7 @@ def build_app(store=None, recent_cp_days=14, storage_path=None):
                        if m.get("name") in metric_set]
                 if not sub:
                     continue
-                nd = Document(dict(d.data))
+                nd = Document(dict(d))
                 nd["metrics"] = sub
                 narrowed.append(nd)
             hits = Collection(narrowed)
@@ -871,10 +871,13 @@ def build_app(store=None, recent_cp_days=14, storage_path=None):
         # signal, stored as an epoch int under ``commit.commit_time``.
         # Convert to ISO-friendly ``{min, max}`` datetimes for the UI.
         tmin = tmax = None
+        commit_ts_set: set[int] = set()
         for d in hits:
             t = (d.get("commit") or {}).get("commit_time")
             if not isinstance(t, (int, float)):
                 continue
+            ti = int(t)
+            commit_ts_set.add(ti)
             if tmin is None or t < tmin: tmin = t
             if tmax is None or t > tmax: tmax = t
         span = None
@@ -888,6 +891,7 @@ def build_app(store=None, recent_cp_days=14, storage_path=None):
             varying=[k for k, v in facets_out.items() if len(v) > 1],
             count=len(hits),
             timestamp_span=span,
+            commit_times=sorted(commit_ts_set),
         )
 
     return app

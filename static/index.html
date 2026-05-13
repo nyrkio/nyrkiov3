@@ -194,10 +194,10 @@
       border: 1.5px solid currentColor; background: transparent;
       cursor: pointer; position: relative; transition: background 0.1s;
     }
-    #filters input[type="checkbox"].val:checked { background: currentColor; }
+    #filters input[type="checkbox"].val:checked { background: rgba(255,255,255,0.9); }
     #filters input[type="checkbox"].val:checked::after {
       content: ""; position: absolute; left: 2px; top: 0px;
-      width: 5px; height: 8px; border: 2px solid #0a0a14;
+      width: 5px; height: 8px; border: 2px solid currentColor;
       border-top: none; border-left: none; transform: rotate(45deg);
     }
     #filters .cb-color { display: inline-flex; align-items: center; justify-content: center; }

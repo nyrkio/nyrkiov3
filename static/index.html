@@ -187,8 +187,20 @@
     #filters .radios label { display: flex; align-items: center; gap: 6px; cursor: pointer;
                              max-width: 260px; white-space: nowrap; overflow: hidden;
                              text-overflow: ellipsis; }
-    #filters input[type="radio"],
-    #filters input[type="checkbox"] { margin: 0; accent-color: #78c8ff; }
+    #filters input[type="radio"] { margin: 0; accent-color: #78c8ff; }
+    #filters input[type="checkbox"].val {
+      appearance: none; -webkit-appearance: none;
+      width: 13px; height: 13px; border-radius: 3px; flex-shrink: 0;
+      border: 1.5px solid currentColor; background: transparent;
+      cursor: pointer; position: relative; transition: background 0.1s;
+    }
+    #filters input[type="checkbox"].val:checked { background: currentColor; }
+    #filters input[type="checkbox"].val:checked::after {
+      content: ""; position: absolute; left: 2px; top: 0px;
+      width: 5px; height: 8px; border: 2px solid #0a0a14;
+      border-top: none; border-left: none; transform: rotate(45deg);
+    }
+    #filters .cb-color { display: inline-flex; align-items: center; justify-content: center; }
     #filters .radios .all-toggle { opacity: 0.7; font-style: italic; }
     #filters .slider-group { min-width: 280px; }
     #time-filter {
@@ -1134,7 +1146,10 @@
               allInput.checked = filters[dim].length === 0;
               void reload();
             });
-            wrap.appendChild(input);
+            const cbWrap = document.createElement("span");
+            cbWrap.className = "cb-color";
+            cbWrap.appendChild(input);
+            wrap.appendChild(cbWrap);
             wrap.appendChild(document.createTextNode(val));
             wrap.title = val;
             // Hover a row to highlight every Z-lane whose series
@@ -1204,7 +1219,9 @@
               const css = "#" + (color >>> 0).toString(16).padStart(6, "0");
               lbl.style.color = css;
               const inp = lbl.querySelector('input.val');
-              if (inp) inp.style.accentColor = css;
+              if (inp) {
+                inp.style.borderColor = css;
+              }
             }
           }
           rows.appendChild(lbl);

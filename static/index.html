@@ -1064,6 +1064,7 @@
     // empty, and the whole control disappears just when the user
     // wants to switch back.
     let _filtersRendered = false;
+    let _filterOrderSet  = false;
     function renderFilters(facetsData) {
       timeFilterEl.innerHTML = "";
       const span = facetsData.timestamp_span;
@@ -1161,7 +1162,7 @@
       // facets only gives us a span, not the individual commit times.
     }
 
-    function syncFilterOrder() {
+    function syncFilterOrder(reorder = true) {
       if (!k._seriesInfo?.length) return;
       // Build dim → (val → {zi, color}) tracking the max-zi series per value.
       const dimMaxZi = {};
@@ -1186,11 +1187,13 @@
         if (!rows) continue;
         const valLabels = [...rows.querySelectorAll('input.val')]
           .map(i => i.closest('label')).filter(Boolean);
-        valLabels.sort((a, b) => {
-          const ziA = ziMap.get(a.querySelector('input.val')?.value) ?? Infinity;
-          const ziB = ziMap.get(b.querySelector('input.val')?.value) ?? Infinity;
-          return ziA - ziB;
-        });
+        if (reorder) {
+          valLabels.sort((a, b) => {
+            const ziA = ziMap.get(a.querySelector('input.val')?.value) ?? Infinity;
+            const ziB = ziMap.get(b.querySelector('input.val')?.value) ?? Infinity;
+            return ziA - ziB;
+          });
+        }
         for (const lbl of valLabels) {
           const val   = lbl.querySelector('input.val')?.value;
           const inWindow = ziMap.has(val);
@@ -1242,7 +1245,8 @@
           }
         }
         await k.fetchAndRender(testsBase + buildQs(fetchFilters));
-        syncFilterOrder();
+        syncFilterOrder(!_filterOrderSet);
+        _filterOrderSet = true;
         setupTimeSlider();
       } catch (e) {
         status.textContent = "error: " + e.message;

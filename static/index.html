@@ -1454,7 +1454,7 @@
         };
 
         // SHA strip drag / pan.
-        let _shaDragActive = false, _shaDragMoved = false, _shaDragStartX = 0, _shaDragStartOff = 0;
+        let _shaDragActive = false, _shaDragMoved = false, _shaDragStartX = 0, _shaDragStartY = 0, _shaDragStartOff = 0;
 
         const applyShaScroll = (newOff) => {
           const inner = shaTicksEl.querySelector(".sha-inner");
@@ -1469,20 +1469,27 @@
           _shaDragActive   = true;
           _shaDragMoved    = false;
           _shaDragStartX   = e.clientX;
+          _shaDragStartY   = e.clientY;
           _shaDragStartOff = shaScrollOffset;
           shaTicksEl.classList.add("dragging");
           timeFilterEl.classList.add("sha-dragging");
         });
         document.addEventListener("mousemove", (e) => {
           if (!_shaDragActive) return;
-          if (Math.abs(e.clientX - _shaDragStartX) > 3) _shaDragMoved = true;
-          applyShaScroll(_shaDragStartOff + (e.clientX - _shaDragStartX));
+          const dx = e.clientX - _shaDragStartX;
+          const dy = e.clientY - _shaDragStartY;
+          if (Math.sqrt(dx*dx + dy*dy) > 6) _shaDragMoved = true;
+          applyShaScroll(_shaDragStartOff + dx);
         });
-        document.addEventListener("mouseup", () => {
+        document.addEventListener("mouseup", (e) => {
           if (!_shaDragActive) return;
           _shaDragActive = false;
           shaTicksEl.classList.remove("dragging");
           timeFilterEl.classList.remove("sha-dragging");
+          if (!_shaDragMoved) {
+            const tick = document.elementFromPoint(e.clientX, e.clientY)?.closest(".tick");
+            if (tick) k.lockCommitByIdx(+tick.dataset.idx);
+          }
         });
         shaTicksEl.addEventListener("touchstart", (e) => {
           _shaDragStartX   = e.touches[0].clientX;
@@ -1632,11 +1639,6 @@
         shaTicksEl.addEventListener("mouseover", (e) => {
           const tick = e.target.closest(".tick");
           if (tick) k.hoverCommitByIdx(+tick.dataset.idx);
-        });
-        shaTicksEl.addEventListener("click", (e) => {
-          if (_shaDragMoved) return;
-          const tick = e.target.closest(".tick");
-          if (tick) k.lockCommitByIdx(+tick.dataset.idx);
         });
 
         // Apply the default window without re-fetching — data already loaded.

@@ -519,6 +519,7 @@
     const status = document.getElementById("status");
 
     const k = new Aurora(container);
+    window.k = k;   // debugging hook — convenience accessor in DevTools
 
     const pagerEl = document.getElementById("z-pager");
     const pagePrev = document.getElementById("page-prev");

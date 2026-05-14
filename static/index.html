@@ -1432,7 +1432,10 @@
             const title = [m.sha, m.author, m.message].filter(Boolean).join(" · ");
             const tick = document.createElement("div");
             tick.className = "tick";
-            tick.dataset.idx = String(i);
+            // Pass the commit timestamp (ms), not the index. Aurora's
+            // internal index space shifts whenever the rendered window
+            // changes; the timestamp is stable across reloads.
+            tick.dataset.ts = String(commitTimes[i]);
             tick.title = title;
             const cpSpan = document.createElement("span");
             cpSpan.className = "cp-count";
@@ -1630,11 +1633,11 @@
         timeFilterEl.addEventListener("mouseleave", () => k.clearHover());
         shaTicksEl.addEventListener("mouseover", (e) => {
           const tick = e.target.closest(".tick");
-          if (tick) k.hoverCommitByIdx(+tick.dataset.idx);
+          if (tick) k.hoverCommitByTs(+tick.dataset.ts);
         });
         shaTicksEl.addEventListener("click", (e) => {
           const tick = e.target.closest(".tick");
-          if (tick) k.lockCommitByIdx(+tick.dataset.idx);
+          if (tick) k.lockCommitByTs(+tick.dataset.ts);
         });
 
         // Apply the default window without re-fetching — data already loaded.

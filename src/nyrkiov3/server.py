@@ -28,7 +28,10 @@ def main(argv: list[str] | None = None) -> int:
     # TODO
     #app.github_token = cfg["app_github_pat"]
 
-    jsonapp = JsonEE(app_name="nyrkiov3", description="Nyrkiö continuous benchmarking analytics", schema_registry=SCHEMAS)
+    # env_prefix stays NYRKIO_ (not NYRKIOV3_): preserves the v2-inherited
+    # convention and matches the NYRKIO_MONGO_URI / NYRKIO_MONGO_DB names
+    # that jsonee.store reads directly.
+    jsonapp = JsonEE(app_name="nyrkiov3", env_prefix="NYRKIO_", description="Nyrkiö continuous benchmarking analytics", schema_registry=SCHEMAS)
     p = jsonapp.parser()
     _build_serve_parser(p)
 

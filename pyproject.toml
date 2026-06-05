@@ -13,15 +13,20 @@ description = "Nyrkiö v3: benchmark ingest, change detection, and query service
 # above will work on older interpreters.
 requires-python = "==3.12.*"
 dependencies = [
-    # jsonee.config provides the ConfigArgParse-based loader used by
-    # both consoles (nyrkio-serve, nyrkio-sync).
+    # The platform. jsonee.config provides the ConfigArgParse loader
+    # used by both consoles (nyrkio-serve, nyrkio-sync), and
+    # jsonee.start() owns the uvicorn ASGI server — so uvicorn is a
+    # transitive dep via jsonee, NOT declared here.
     "jsonee",
+    # The shared data vocabulary. The app uses Document/Collection and
+    # the extjson codec directly (the universal language of the stack,
+    # like dict itself), so it declares them even though jsonee also
+    # pulls them in. extjson comes via purejson too, but the app
+    # imports it directly, so it's listed explicitly.
     "purejson",
     "extjson",
+    # Benchmark-format parsers (nyrkio-sync backfill).
     "benchzoo",
-    # uvicorn is the runtime ASGI server — production needs it, so
-    # it's a direct dep, not dev-only.
-    "uvicorn",
 ]
 
 [project.optional-dependencies]

@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import datetime as _dt
 import io
-import json
 import logging
 import re
 import urllib.error
@@ -32,7 +31,8 @@ import urllib.request
 import zipfile
 
 from purejson import Document
-from extjson import utcnow
+# Never stdlib json — extjson is the one allowed json/jsonschema wrapper.
+from extjson import utcnow, loads
 
 
 LOG = logging.getLogger("nyrkiov3.github_ingest")
@@ -73,7 +73,7 @@ class GitHubClient:
             data = resp.read()
             if binary:
                 return data
-            return json.loads(data.decode("utf-8"))
+            return loads(data.decode("utf-8"))
 
     def list_workflow_runs(self, owner: str, repo: str, workflow_filename: str,
                            *, branch: str | None = None,

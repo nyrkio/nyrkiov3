@@ -17,12 +17,14 @@ from __future__ import annotations
 import base64
 import hmac
 import hashlib
-import json
 import secrets
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# Never stdlib json — extjson is the one allowed json/jsonschema wrapper.
+from extjson import dumps, loads
 
 
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
@@ -49,7 +51,7 @@ def sign_session(payload: dict, secret: str, ttl_s: int = 30 * 86400) -> str:
     """Return a signed cookie string from the given payload dict."""
     body = dict(payload)
     body.setdefault("exp", int(time.time()) + ttl_s)
-    raw = json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    raw = dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
     b = _b64e(raw)
     sig = hmac.new(secret.encode("utf-8"), b.encode("ascii"), hashlib.sha256).digest()
     return f"{b}.{_b64e(sig)}"
@@ -65,7 +67,7 @@ def verify_session(cookie: str, secret: str) -> dict:
     if not hmac.compare_digest(expected, actual):
         raise AuthError("bad session signature")
     try:
-        payload = json.loads(_b64d(b))
+        payload = loads(_b64d(b))
     except Exception as e:
         raise AuthError(f"payload decode failed: {e}")
     if payload.get("exp", 0) < int(time.time()):
@@ -106,7 +108,7 @@ def exchange_code(client_id: str, client_secret: str, code: str,
         headers={"Accept": "application/json",
                  "User-Agent": "nyrkio-oauth/0.1"})
     with urllib.request.urlopen(req, timeout=30) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+        data = loads(resp.read().decode("utf-8"))
     if "access_token" not in data:
         raise AuthError(f"GitHub did not return an access_token: {data!r}")
     return data["access_token"]
@@ -119,4 +121,4 @@ def fetch_user(access_token: str) -> dict:
                  "Accept": "application/vnd.github+json",
                  "User-Agent": "nyrkio-oauth/0.1"})
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        return loads(resp.read().decode("utf-8"))

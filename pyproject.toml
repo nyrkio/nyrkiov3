@@ -11,7 +11,7 @@ description = "Nyrkiö v3: benchmark ingest, change detection, and query service
 # on the free-threaded ("no-GIL") build of 3.14 those threads actually
 # execute concurrently. Python 3.14 is a hard requirement — nothing
 # above will work on older interpreters.
-requires-python = ">=3.14"
+requires-python = "==3.12.*"
 dependencies = [
     # jsonee.config provides the ConfigArgParse-based loader used by
     # both consoles (nyrkio-serve, nyrkio-sync).
@@ -25,18 +25,34 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-asyncio>=0.23", "httpx>=0.27"]
+dev = [
+    "pytest>=7", 
+    "pytest-asyncio>=0.23", 
+    "httpx>=0.27",
+    "purejson @ file:///home/claude/nyrkiov3-master/PureJson",
+    "extjson @ file:///home/claude/nyrkiov3-master/ExtendedJsonSchema",
+    "jsonee @ file:///home/claude/nyrkiov3-master/JsonEE",
+    "benchzoo @ file:///home/claude/benchzoo",
+]
+prod = [
+    # jsonee.config provides the ConfigArgParse-based loader used by
+    # both consoles (nyrkio-serve, nyrkio-sync).
+    "jsonee",
+    "purejson",
+    "extjson",
+    "benchzoo",
+]
 
 # The four backing libraries aren't on PyPI; pull each from GitHub.
 # uv resolves the latest commit on `main` at sync time and pins it in
 # uv.lock, so deployments are reproducible. For local development with
 # editable sibling checkouts, override these entries in `uv.toml` (the
 # user-level / project-local config takes precedence over pyproject).
-[tool.uv.sources]
-purejson = { git = "https://github.com/nyrkio/purejson", branch = "main" }
-extjson  = { git = "https://github.com/nyrkio/extjson",  branch = "main" }
-jsonee   = { git = "https://github.com/nyrkio/jsonee",   branch = "main" }
-benchzoo = { git = "https://github.com/nyrkio/benchzoo", branch = "main" }
+#[tool.uv.sources]
+#purejson = { git = "https://github.com/nyrkio/purejson", branch = "main" }
+#extjson  = { git = "https://github.com/nyrkio/extjson",  branch = "main" }
+#jsonee   = { git = "https://github.com/nyrkio/jsonee",   branch = "main" }
+#benchzoo = { git = "https://github.com/nyrkio/benchzoo", branch = "main" }
 
 [project.scripts]
 nyrkio-sync = "nyrkiov3.cli:main"

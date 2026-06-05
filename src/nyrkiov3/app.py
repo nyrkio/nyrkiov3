@@ -5,12 +5,12 @@ from __future__ import annotations
 import datetime
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor
 
 from purejson import Document, Collection
 from extjson import ObjectId, dumps, utcnow, parse_date, to_utc, UTC
-from jsonee import JsonEE, Request, Response, HTTPError, InMemoryStore, open_store
+from jsonee import Request, Response, HTTPError, InMemoryStore
 
+from .config import _build_serve_parser
 from . import auth as _auth
 
 
@@ -221,60 +221,13 @@ def _finalise_run(raw, *, repo_id, absolute, default_source):
     return doc
 
 
-def build_app(store=None, recent_cp_days=14, storage_path=None,
-              mongo_uri=None, mongo_db=None, auth_config=None):
-    """Build the v0 nyrkio app.
-
-    - ``store``: pre-built store (tests, explicit InMemoryStore). When
-      omitted the app calls open_store() which:
-        • uses ``mongo_uri`` (or NYRKIO_MONGO_URI) if set
-        • otherwise starts embedded secantusdb at ``storage_path``
-          (ephemeral in-memory when storage_path is None, persisted otherwise)
-    - ``storage_path``: directory for embedded secantusdb data. Ignored when
-      a mongo URI is provided or a ``store`` is passed explicitly.
-    - ``auth_config``: dict with ``client_id``, ``client_secret``,
-      ``session_secret``, ``base_url``. Falls back to ``NYRKIO_*`` env
-      vars when absent (tests that don't care about auth can omit it).
-    """
-    if store is None:
-        # open_store reads NYRKIO_MONGO_DB itself; surface mongo_db
-        # through the env so a JsonEE bump isn't required for this
-        # one knob. Don't clobber an externally-set value.
-        if mongo_db and not os.environ.get("NYRKIO_MONGO_DB"):
-            os.environ["NYRKIO_MONGO_DB"] = mongo_db
-        store = open_store(storage_path=storage_path, uri=mongo_uri)
-    app = JsonEE(schema_registry=SCHEMAS)
-    app.store = store  # attach for tests / handlers
-    # Background executor for work that shouldn't block HTTP handlers —
-    # webhooks, periodic rebuilds, change-point detection. On Python
-    # 3.14 free-threaded these threads run concurrently with each other
-    # and with the request path; on a GIL build they still decouple the
-    # response from the work.
-    app.background = ThreadPoolExecutor(
-        max_workers=4, thread_name_prefix="nyrkio-bg")
-    # Tunables that downstream tools (flyover, Slack summary) read.
+def build_app(app, recent_cp_days=14):
+    """Things specific to this app"""
     # `recent_cp_days` is the "recent window": any commit within that many
     # days of now() is interesting enough to visit in the daily scan even
     # if it carries no change points; older commits only surface when they
     # do have CPs.
     app.config = {"recent_cp_days": recent_cp_days}
-
-    # Auth / OAuth configuration. These are populated by the caller
-    # (demo_server, production wiring) before serving requests; missing
-    # values cause the OAuth endpoints to 503 politely so local dev
-    # without a registered GitHub App still works.
-    # Public-facing base URL Nyrkiö is served from. Hardcoded so we
-    # can register the OAuth callback and webhook URLs with GitHub once
-    # and forget. For local dev override with NYRKIO_BASE_URL.
-    # auth_config is either supplied by the caller (server.py, after
-    # nyrkiov3.config.load_serve_config) or filled from env vars so
-    # tests / demos that hand-build the app still work.
-    app.auth_config = dict(auth_config) if auth_config else {
-        "client_id": os.environ.get("NYRKIO_GITHUB_CLIENT_ID", ""),
-        "client_secret": os.environ.get("NYRKIO_GITHUB_CLIENT_SECRET", ""),
-        "session_secret": os.environ.get("NYRKIO_SESSION_SECRET", ""),
-        "base_url": os.environ.get("NYRKIO_BASE_URL", "https://nyrkio.com"),
-    }
 
     @app.route("GET", "/api/v3/config")
     def get_config(request: Request):
@@ -284,6 +237,11 @@ def build_app(store=None, recent_cp_days=14, storage_path=None,
         cfg["auth_enabled"] = bool(
             app.auth_config["client_id"] and app.auth_config["session_secret"])
         return Document(cfg)
+
+    # TODO: More refactoring needed below:
+    # login and oauth are common functionality and belong in jsonee.
+    # A basic User document belongs there too, but this app should extend that
+    # with its own NyrkioUser that has more fields (github_id)
 
     # ------ auth: /login, /oauth/callback, /logout, /api/v3/me ---------
 
@@ -381,7 +339,7 @@ def build_app(store=None, recent_cp_days=14, storage_path=None,
 
     @app.route("GET", "/api/v3/me")
     def me(request: Request):
-        u = _current_user(request, store, app.auth_config["session_secret"])
+        u = _current_user(request, app.store, app.auth_config["session_secret"])
         if not u:
             raise HTTPError(401, "not signed in")
         # Don't leak the access token to the browser.
@@ -392,9 +350,10 @@ def build_app(store=None, recent_cp_days=14, storage_path=None,
             avatar_url=u.get("avatar_url", ""),
         )
 
+    # TODO: From here on the below routes belong here (just to be clear)
     @app.route("GET", "/api/v3/me/repos")
     def my_repos(request: Request):
-        u = _current_user(request, store, app.auth_config["session_secret"])
+        u = _current_user(request, app.store, app.auth_config["session_secret"])
         if not u:
             raise HTTPError(401, "not signed in")
         # Fetch user's repos via their token; surface name + basics only.
@@ -607,8 +566,8 @@ def build_app(store=None, recent_cp_days=14, storage_path=None,
             status=202,
         )
 
-    repos = store.collection("repos")
-    runs = store.collection("test_runs")
+    repos = app.store.collection("repos")
+    runs = app.store.collection("test_runs")
 
     def _ensure_repo(platform, namespace, repo):
         absolute = f"{platform}/{namespace}/{repo}"

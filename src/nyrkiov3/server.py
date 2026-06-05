@@ -19,53 +19,39 @@ import logging
 import os
 import sys
 
-from .app import build_app
-from .config import load_serve_config
+from jsonee.app import JsonEE
 
+from .config import _build_serve_parser
+from .app import SCHEMAS, build_app
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    cfg = load_serve_config(argv)
+    # TODO
+    #app.github_token = cfg["app_github_pat"]
 
-    app = build_app(
-        storage_path=cfg["storage_path"],
-        mongo_uri=cfg["mongo_uri"],
-        mongo_db=cfg["mongo_db"],
-        auth_config={
-            "client_id": cfg["github_client_id"],
-            "client_secret": cfg["github_client_secret"],
-            "session_secret": cfg["session_secret"],
-            "base_url": cfg["base_url"],
-        },
-    )
-    app.mount_client()  # jsonee.js at /js/lib/jsonee.js
-    app.github_token = cfg["app_github_pat"]
+    jsonapp = JsonEE(app_name="nyrkiov3", description="Nyrkiö continuous benchmarking analytics", schema_registry=SCHEMAS)
+    p = jsonapp.parser()
+    _build_serve_parser(p)
 
-    if cfg["static_dir"] and os.path.isdir(cfg["static_dir"]):
-        app.static("/", cfg["static_dir"])
-        print(f"static: serving {cfg['static_dir']} at /")
-    if cfg["aurora_dir"] and os.path.isdir(cfg["aurora_dir"]):
-        app.static("/js/lib/aurora", cfg["aurora_dir"])
-        print(f"static: serving {cfg['aurora_dir']} at /js/lib/aurora/")
+    jsonapp.parse_args(argv)
+    jsonapp.open_store()
+    logging.debug(jsonapp.cfg)
 
-    host, _, port = cfg["bind"].rpartition(":")
-    host = host or "127.0.0.1"
-    try:
-        import uvicorn
-    except ImportError:
-        print("uvicorn not installed. `pip install uvicorn` (or uv sync) and rerun.",
-              file=sys.stderr)
-        return 1
+    jsonapp.auth_config={
+        "client_id": jsonapp.cfg["github_client_id"],
+        "client_secret": jsonapp.cfg["github_client_secret"],
+        "session_secret": jsonapp.cfg["session_secret"],
+        "base_url": jsonapp.cfg["base_url"],
+    }
 
-    n = app.store.collection("test_runs").count()
-    store_desc = cfg["mongo_uri"] if cfg["mongo_uri"] else cfg["storage_path"]
-    print(f"store has {n} runs ({store_desc})")
-    print(f"listening on http://{host}:{port}  "
-          f"(base_url={app.auth_config['base_url']})")
-    uvicorn.run(app, host=host, port=int(port), log_level="info")
+    if jsonapp.cfg["static_dir"] and os.path.isdir(jsonapp.cfg["static_dir"]):
+        jsonapp.static("/", jsonapp.cfg["static_dir"])
+        print(f"static: serving {jsonapp.cfg['static_dir']} at /")
+    if jsonapp.cfg["aurora_dir"] and os.path.isdir(jsonapp.cfg["aurora_dir"]):
+        jsonapp.static("/js/lib/aurora", jsonapp.cfg["aurora_dir"])
+        print(f"static: serving {jsonapp.cfg['aurora_dir']} at /js/lib/aurora/")
+
+    build_app(jsonapp)
+    jsonapp.start()
     return 0
 
 

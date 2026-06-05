@@ -795,6 +795,7 @@
           }
           statusEl.textContent = "still ingesting — try reloading in a minute";
         } catch (err) {
+          console.debug(e);
           statusEl.textContent = "error: " + err.message;
         }
       }
@@ -810,6 +811,7 @@
           });
           location.search = `?repo=${result.target_repo}`;
         } catch (err) {
+          console.debug(e);
           statusEl.textContent = "error: " + err.message;
         }
       }
@@ -929,6 +931,7 @@
             pickerEl.style.display = "block";
           }
         } catch (err) {
+          console.debug(e);
           statusEl.textContent = "error: " + err.message;
         }
       }
@@ -1269,13 +1272,37 @@
             fetchFilters.until = new Date(_windowUntilMs).toISOString();
           }
         }
-        await k.fetchAndRender(testsBase + buildQs(fetchFilters));
+        await fetchAndRender(testsBase + buildQs(fetchFilters));
         syncFilterOrder(!_filterOrderSet);
         _filterOrderSet = true;
         setupTimeSlider();
       } catch (e) {
+        console.debug(e);
         status.textContent = "error: " + e.message;
       }
+    }
+
+    async function fetchAndRender(url) {
+      // get config first
+      var c = { recent_cp_days: 14 }; // default
+      try {
+        const cr = await fetch("api/v3/config");
+        if (cr.ok) {
+          const payload = await cr.json();
+          // Unwrap JsonEE envelope if present; fall back to plain JSON.
+          c = payload?.data ?? payload;
+        }
+      } catch (e) { console.info("Fetching config for 3D plot failed"); console.info(e); }
+      k.setConfig(c);
+
+      // then the data
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
+      const payload = await res.json();
+      // Unwrap JsonEE envelope if present; fall back to plain JSON.
+      var d = payload?.data ?? payload;
+      k.setData( d );
+      return d;
     }
 
     // Commit-indexed time range slider. The slider's min/max are
@@ -1616,7 +1643,7 @@
               fetchFilters.since = new Date(_windowSinceMs).toISOString();
             if (_windowUntilMs !== null)
               fetchFilters.until = new Date(_windowUntilMs).toISOString();
-            await k.fetchAndRender(testsBase + buildQs(fetchFilters));
+            await fetchAndRender(testsBase + buildQs(fetchFilters));
             syncFilterOrder();
             refreshTickMeta();
           }

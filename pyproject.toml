@@ -6,56 +6,42 @@ build-backend = "setuptools.build_meta"
 name = "nyrkiov3"
 version = "0.0.1"
 description = "Nyrkiö v3: benchmark ingest, change detection, and query service."
-# Target CPython 3.14. The service uses background threads to parse
-# benchmark logs in parallel (`concurrent.futures.ThreadPoolExecutor`);
-# on the free-threaded ("no-GIL") build of 3.14 those threads actually
-# execute concurrently. Python 3.14 is a hard requirement — nothing
-# above will work on older interpreters.
+# Runs on CPython 3.12. (Benchmark logs are parsed in parallel via
+# ThreadPoolExecutor; a later move to the free-threaded 3.14 build would
+# let those threads run truly concurrently.)
 requires-python = "==3.12.*"
+# Production dependencies: the PLATFORM and the benchmark parsers, only.
+#  - jsonee owns config, the store, the ASGI server (uvicorn) and the
+#    data vocabulary, so purejson/extjson/uvicorn are all transitive via
+#    jsonee (jsonee -> purejson -> extjson). The app imports Document and
+#    the extjson codec directly, but doesn't re-declare what the platform
+#    already guarantees.
+#  - benchzoo provides the benchmark-format parsers (nyrkio-sync backfill).
+#  - AuroraBorealis is a JS UI library served as static assets
+#    (--aurora-dir), NOT a Python dependency.
+# Editable local checkouts for development live in requirements-dev.txt.
 dependencies = [
-    # The platform. jsonee.config provides the ConfigArgParse loader
-    # used by both consoles (nyrkio-serve, nyrkio-sync), and
-    # jsonee.start() owns the uvicorn ASGI server — so uvicorn is a
-    # transitive dep via jsonee, NOT declared here.
     "jsonee",
-    # The shared data vocabulary. The app uses Document/Collection and
-    # the extjson codec directly (the universal language of the stack,
-    # like dict itself), so it declares them even though jsonee also
-    # pulls them in. extjson comes via purejson too, but the app
-    # imports it directly, so it's listed explicitly.
-    "purejson",
-    "extjson",
-    # Benchmark-format parsers (nyrkio-sync backfill).
     "benchzoo",
 ]
 
 [project.optional-dependencies]
+# Test tooling only. Editable sibling checkouts are NOT here — a PEP 508
+# extra can't express `-e`, and keeping the prod manifest free of local
+# paths is the whole point. Use requirements-dev.txt for those.
 dev = [
-    "pytest>=7", 
-    "pytest-asyncio>=0.23", 
+    "pytest>=7",
+    "pytest-asyncio>=0.23",
     "httpx>=0.27",
-    "purejson @ file:///home/claude/nyrkiov3-master/PureJson",
-    "extjson @ file:///home/claude/nyrkiov3-master/ExtendedJsonSchema",
-    "jsonee @ file:///home/claude/nyrkiov3-master/JsonEE",
-    "benchzoo @ file:///home/claude/benchzoo",
-]
-prod = [
-    # jsonee.config provides the ConfigArgParse-based loader used by
-    # both consoles (nyrkio-serve, nyrkio-sync).
-    "jsonee",
-    "purejson",
-    "extjson",
-    "benchzoo",
 ]
 
-# The four backing libraries aren't on PyPI; pull each from GitHub.
-# uv resolves the latest commit on `main` at sync time and pins it in
-# uv.lock, so deployments are reproducible. For local development with
-# editable sibling checkouts, override these entries in `uv.toml` (the
-# user-level / project-local config takes precedence over pyproject).
+# The backing libraries aren't on PyPI. For PRODUCTION, source them from
+# GitHub by uncommenting the block below (uv pins the resolved commit in
+# uv.lock for reproducible deploys). jsonee carries purejson/extjson via
+# its own sources, so nyrkiov3 only needs jsonee + benchzoo here.
+# For LOCAL development with editable sibling checkouts, use instead:
+#     uv pip install -e . -r requirements-dev.txt
 #[tool.uv.sources]
-#purejson = { git = "https://github.com/nyrkio/purejson", branch = "main" }
-#extjson  = { git = "https://github.com/nyrkio/extjson",  branch = "main" }
 #jsonee   = { git = "https://github.com/nyrkio/jsonee",   branch = "main" }
 #benchzoo = { git = "https://github.com/nyrkio/benchzoo", branch = "main" }
 

@@ -1,0 +1,17 @@
+# Editable sibling checkouts for local development.
+#
+# Production dependencies live in pyproject.toml (jsonee + benchzoo).
+# This file overrides them with live, EDITABLE local source so an edit in
+# any repo takes effect immediately — no reinstall. Paths are relative to
+# this file (the nyrkiov3 repo root).
+#
+# Set up the whole dev environment in one shot:
+#     uv pip install -e . -r requirements-dev.txt
+#
+# AuroraBorealis is a JS UI library, not a Python package — serve it in
+# dev with:  nyrkio-serve --aurora-dir ../AuroraBorealis/static
+
+-e ../PureJson
+-e ../ExtendedJsonSchema
+-e ../JsonEE
+-e ../../benchzoo

@@ -137,6 +137,39 @@ class GitHubClient:
     def get_commit(self, owner: str, repo: str, sha: str) -> dict:
         return self._request(f"/repos/{owner}/{repo}/commits/{sha}")
 
+    def list_run_artifacts(self, owner: str, repo: str, run_id: int) -> list[dict]:
+        data = self._request(
+            f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts?per_page=100")
+        return data.get("artifacts", [])
+
+    def download_artifact_zip(self, owner: str, repo: str, artifact_id: int) -> bytes:
+        # Same 302 -> signed-S3-URL dance as get_job_log: GitHub redirects to
+        # a pre-signed URL that rejects the Authorization header, so take the
+        # redirect manually and refetch the Location with no auth header.
+        url = GITHUB_API + f"/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": API_VERSION,
+            "User-Agent": self._ua,
+        })
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def http_error_302(self, req, fp, code, msg, headers):
+                raise _Redirect(headers.get("Location"))
+            http_error_301 = http_error_302
+            http_error_303 = http_error_302
+            http_error_307 = http_error_302
+            http_error_308 = http_error_302
+
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            with opener.open(req, timeout=120) as resp:
+                return resp.read()
+        except _Redirect as r:
+            with urllib.request.urlopen(r.location, timeout=120) as resp2:
+                return resp2.read()
+
 
 # ----------------------------------------------------------------------------
 # Log slicing
@@ -213,6 +246,33 @@ def _commit_sub_doc(commit_info: dict, repo: str | None = None) -> dict:
     return out
 
 
+def _insert_parsed(parsed, *, runs_coll, commit_with_ref, runner,
+                   workflow_filename, repo_doc, absolute, source):
+    """Turn benchzoo-parsed entries into stored docs; return count inserted.
+
+    Attaches the bits the ingest layer uniquely knows: ``commit`` (with the
+    authoritative ref), ``run.runner`` / ``run.workflow``, repo linkage, and
+    ``source`` provenance. Entries lacking a test_name or metrics are skipped.
+    """
+    n = 0
+    for entry in parsed:
+        test = entry.get("test") or {}
+        if not test.get("test_name") or not entry.get("metrics"):
+            continue
+        run_block = dict(entry.get("run") or {})
+        run_block["runner"] = runner
+        run_block["workflow"] = workflow_filename
+        doc = dict(entry)
+        doc["run"] = run_block
+        doc["commit"] = commit_with_ref
+        doc["repo_id"] = repo_doc["_id"]
+        doc["absolute_name"] = absolute
+        doc["source"] = source
+        runs_coll.insert_one(Document(doc))
+        n += 1
+    return n
+
+
 def ingest_workflow_run(
     *,
     client: GitHubClient,
@@ -287,7 +347,72 @@ def ingest_workflow_run(
         ))
     repo_doc = repos.find_one({"absolute_name": absolute})
 
+    # The commit sub-doc carries the authoritative ref from the workflow
+    # run — parsers can't see that, so attach it once up front.
+    commit_with_ref = dict(commit)
+    if run.get("head_branch") and "ref" not in commit_with_ref:
+        commit_with_ref["ref"] = run["head_branch"]
+
     inserted = 0
+
+    # --- Artifact-based ingestion --------------------------------------------
+    # benchzoo's CI writes benchmark output to a file and uploads it as a
+    # workflow artifact (e.g. tinybench-output -> output.json); that content
+    # never appears in the job log. Fetch the run's artifacts, unzip, and
+    # sniff/parse each member. When a run carries benchmark artifacts we treat
+    # them as authoritative and skip the log path below, so a tool that both
+    # prints to stdout AND uploads a file isn't counted twice.
+    runner_name = next((j.get("name", "") for j in jobs
+                        if j.get("conclusion") == "success"), "")
+    try:
+        artifacts = client.list_run_artifacts(owner, repo, run["id"])
+    except urllib.error.HTTPError as e:
+        LOG.warning("artifact list failed for run %s (%s); skipping", run["id"], e)
+        artifacts = []
+    for art in artifacts:
+        if art.get("expired"):
+            continue
+        try:
+            zbytes = client.download_artifact_zip(owner, repo, art["id"])
+            zf = zipfile.ZipFile(io.BytesIO(zbytes))
+        except Exception as e:
+            LOG.warning("artifact %s for run %s: download/unzip failed (%s); skipping",
+                        art.get("name"), run["id"], e)
+            continue
+        for member in zf.namelist():
+            if member.endswith("/"):
+                continue
+            content = zf.read(member)
+            parser = pinned_parser
+            if parser is None:
+                from benchzoo import sniff as _sniff_content
+                from benchzoo.parsers import find_parser as _find_parser
+                framework = _sniff_content(content)
+                if framework is None:
+                    LOG.info("artifact %s/%s didn't match any known format; skipping",
+                             art.get("name"), member)
+                    continue
+                try:
+                    parser = _find_parser(framework)
+                except (KeyError, ValueError) as e:
+                    LOG.info("artifact %s/%s: no parser for %s (%s); skipping",
+                             art.get("name"), member, framework, e)
+                    continue
+            parsed = parser.parse(content)
+            if not parsed:
+                continue
+            inserted += _insert_parsed(
+                parsed, runs_coll=runs_coll, commit_with_ref=commit_with_ref,
+                runner=runner_name, workflow_filename=workflow_filename,
+                repo_doc=repo_doc, absolute=absolute,
+                source={"kind": "github_actions_artifact", "run_id": run["id"],
+                        "artifact": art.get("name", ""), "file": member,
+                        "workflow": workflow_filename})
+    if inserted:
+        return inserted
+
+    # --- Log-based ingestion (fallback) --------------------------------------
+    # For tools that print results to stdout rather than uploading a file.
     for job in jobs:
         if job.get("conclusion") != "success":
             continue
@@ -318,40 +443,12 @@ def ingest_workflow_run(
         if not parsed:
             LOG.info("job %s produced no parsed runs", job["id"])
             continue
-
-        # Ensure the commit sub-doc carries the authoritative ref
-        # from the workflow run — parsers can't see that.
-        commit_with_ref = dict(commit)
-        if run.get("head_branch") and "ref" not in commit_with_ref:
-            commit_with_ref["ref"] = run["head_branch"]
-
-        for entry in parsed:
-            test = entry.get("test") or {}
-            if not test.get("test_name") or not entry.get("metrics"):
-                continue
-            # The workflow has authoritative knowledge of the runner
-            # (job name) and workflow filename — attach them to the
-            # run's ``run`` block. Parsers don't know those things.
-            run_block = dict(entry.get("run") or {})
-            run_block["runner"] = job.get("name", "")
-            run_block["workflow"] = workflow_filename
-
-            # The benchzoo doc — every key as the parser emitted it,
-            # plus the bits the ingest layer uniquely knows
-            # (``commit``, ``run.runner``, ``run.workflow``).
-            doc = dict(entry)
-            doc["run"] = run_block
-            doc["commit"] = commit_with_ref
-            doc["repo_id"] = repo_doc["_id"]
-            doc["absolute_name"] = absolute
-            doc["source"] = {
-                "kind": "github_actions",
-                "run_id": run["id"],
-                "job_id": job["id"],
-                "workflow": workflow_filename,
-            }
-            runs_coll.insert_one(Document(doc))
-            inserted += 1
+        inserted += _insert_parsed(
+            parsed, runs_coll=runs_coll, commit_with_ref=commit_with_ref,
+            runner=job.get("name", ""), workflow_filename=workflow_filename,
+            repo_doc=repo_doc, absolute=absolute,
+            source={"kind": "github_actions", "run_id": run["id"],
+                    "job_id": job["id"], "workflow": workflow_filename})
     return inserted
 
 

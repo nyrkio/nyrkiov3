@@ -608,8 +608,11 @@ def build_app(app=None, recent_cp_days=14):
                 raise HTTPError(502, f"github workflows: {e}")
             return Document(repo=f"{owner}/{repo}", needs_selection=True,
                             workflows=available)
-        jobs = {wf: _submit_backfill(owner, repo, token, wf)
-                for wf in workflows}
+        # A list, not a ``{workflow: job_id}`` map: workflow filenames
+        # contain dots ("rust_perf.yml") and PureJson/DocumentDB forbid
+        # dots in document keys.
+        jobs = [{"workflow": wf, "job_id": _submit_backfill(owner, repo, token, wf)}
+                for wf in workflows]
         return Response(
             body=Document(accepted=True, repo=f"{owner}/{repo}",
                           workflows=workflows, jobs=jobs),

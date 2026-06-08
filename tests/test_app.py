@@ -334,3 +334,28 @@ async def test_backfill_jobs_endpoint_reports_latest_event_with_diagnostics(app,
 
     missing = await client.get("/api/v3/public/jobs/nope")
     assert missing.status_code == 404
+
+
+async def test_connect_returns_jobs_as_list_not_dotted_keys(app, client):
+    """Regression: workflow filenames contain dots ("rust_perf.yml"), and
+    PureJson/DocumentDB forbid dots in document keys. The connect response
+    must return ``jobs`` as a LIST of {workflow, job_id}, not a
+    {filename: job_id} map (which 500s on serialization)."""
+    app.github_token = "fake-token-not-used-because-backfill-is-stubbed"
+
+    class _NoopBackground:
+        def submit(self, fn, *a, **k):   # don't run the real GitHub backfill
+            return None
+
+    app.background = _NoopBackground()
+
+    resp = await client.post(
+        "/api/v3/public/connect",
+        json={"repo": "owner/name",
+              "workflows": ["rust_perf.yml", "perf_nightly.yml"]},
+    )
+    assert resp.status_code == 202
+    data = _data(resp)
+    assert isinstance(data["jobs"], list)                       # not a dict
+    assert {j["workflow"] for j in data["jobs"]} == {"rust_perf.yml", "perf_nightly.yml"}
+    assert all(j["job_id"] for j in data["jobs"])

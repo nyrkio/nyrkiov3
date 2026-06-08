@@ -436,26 +436,41 @@ def build_app(app=None, recent_cp_days=14):
                 LOG.exception("backfill failed for %s/%s", owner, repo)
         app.background.submit(work)
 
+    # Workflows whose name or filename mentions one of these are treated
+    # as likely benchmark sources: flagged ``recommended`` in the picker
+    # (sorted to the top, preselected by the UI) and the auto-pick for a
+    # connect that doesn't name a workflow.
+    _BENCH_WORKFLOW_KEYS = ("perf", "bench")
+
+    def _workflow_is_recommended(w) -> bool:
+        filename = (w.get("path") or "").split("/")[-1]
+        hay = f"{w.get('name', '')} {filename}".lower()
+        return any(k in hay for k in _BENCH_WORKFLOW_KEYS)
+
+    def _list_workflows(client, owner: str, repo: str) -> list[dict]:
+        """All active workflows as ``{filename, name, recommended}``,
+        recommended (perf/bench) first then alphabetical."""
+        out = []
+        for w in client.list_workflows(owner, repo):
+            if w.get("state") != "active":
+                continue
+            out.append({
+                "filename": (w.get("path") or "").split("/")[-1],
+                "name": w.get("name", ""),
+                "recommended": _workflow_is_recommended(w),
+            })
+        out.sort(key=lambda x: (not x["recommended"], x["filename"]))
+        return out
+
     def _detect_workflow(client, owner: str, repo: str) -> str | None:
-        """Find a plausibly-benchmark workflow by filename substring."""
-        import urllib.request, json as _json
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{owner}/{repo}/actions/workflows",
-            headers={"Authorization": f"Bearer {client._token}",
-                     "Accept": "application/vnd.github+json",
-                     "User-Agent": "nyrkio/0.1"})
+        """First active workflow whose name/path mentions perf or bench."""
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = _json.loads(resp.read().decode("utf-8"))
+            for w in _list_workflows(client, owner, repo):
+                if w["recommended"]:
+                    return w["filename"]
         except Exception:
             return None
-        # Prefer files with "bench" in the path; fall back to "benchmarks.yml".
-        candidates = data.get("workflows", [])
-        for w in candidates:
-            path = (w.get("path") or "").lower()
-            if "bench" in path:
-                return path.split("/")[-1]
-        return "benchmarks.yml"
+        return None
 
     @app.route("POST", "/api/v3/me/repos/{owner}/{repo}/connect")
     def connect_repo(request: Request):
@@ -515,11 +530,14 @@ def build_app(app=None, recent_cp_days=14):
         repo; we use the app's own PAT to fetch, no webhook is created.
 
         Body: ``{"repo": "owner/name", "workflows"?: ["a.yml", ...]}``.
-        If ``workflows`` is present, one backfill job is queued per
-        filename. Without it we fall through to ``_detect_workflow``
-        for a single best-guess pick — preserved for the no-JS /
-        scripted caller, but the UI always passes an explicit list now.
-        A deprecated scalar ``workflow`` alias is still accepted.
+
+        - **Without ``workflows`` — the discovery step.** Returns the
+          repo's active workflows as ``{filename, name, recommended}``,
+          the perf/bench ones flagged ``recommended`` and sorted to the
+          top (the UI preselects them). Nothing is ingested yet; the
+          caller picks and POSTs again with an explicit list.
+        - **With ``workflows``.** Queues one backfill job per filename and
+          returns 202. A deprecated scalar ``workflow`` alias is accepted.
         """
         body = request.get("body") or {}
         repo_str = (body.get("repo") or "").strip().strip("/")
@@ -532,14 +550,21 @@ def build_app(app=None, recent_cp_days=14):
         workflows = body.get("workflows")
         if not workflows and body.get("workflow"):
             workflows = [body["workflow"]]
-        if workflows:
-            for wf in workflows:
-                _submit_backfill(owner, repo, token, wf)
-        else:
-            _submit_backfill(owner, repo, token, None)
+        if not workflows:
+            # Discovery: present the choices instead of silently guessing
+            # one. perf/bench workflows come first and are preselected.
+            from .github_ingest import GitHubClient
+            try:
+                available = _list_workflows(GitHubClient(token), owner, repo)
+            except Exception as e:
+                raise HTTPError(502, f"github workflows: {e}")
+            return Document(repo=f"{owner}/{repo}", needs_selection=True,
+                            workflows=available)
+        for wf in workflows:
+            _submit_backfill(owner, repo, token, wf)
         return Response(
             body=Document(accepted=True, repo=f"{owner}/{repo}",
-                          workflows=workflows or []),
+                          workflows=workflows),
             status=202,
         )
 

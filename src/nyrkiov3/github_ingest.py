@@ -137,6 +137,11 @@ class GitHubClient:
     def get_commit(self, owner: str, repo: str, sha: str) -> dict:
         return self._request(f"/repos/{owner}/{repo}/commits/{sha}")
 
+    def list_workflows(self, owner: str, repo: str) -> list[dict]:
+        data = self._request(
+            f"/repos/{owner}/{repo}/actions/workflows?per_page=100")
+        return data.get("workflows", [])
+
     def list_run_artifacts(self, owner: str, repo: str, run_id: int) -> list[dict]:
         data = self._request(
             f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts?per_page=100")

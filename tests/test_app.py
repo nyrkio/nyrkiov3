@@ -7,6 +7,16 @@ from nyrkiov3.app import build_app
 pytestmark = pytest.mark.asyncio
 
 
+def _data(resp):
+    """Unwrap the JsonEE ``{data, _links, _messages}`` response envelope."""
+    return resp.json()["data"]
+
+
+def _errs(resp):
+    """All message text from the envelope's ``_messages`` (where errors live)."""
+    return " ".join(m.get("text", "") for m in resp.json().get("_messages", []))
+
+
 @pytest.fixture
 def app():
     return build_app()
@@ -61,7 +71,7 @@ async def test_ingest_inserts_and_creates_repo(client, app):
     payload = {"runs": [_bz_run("tpch_q1", 42.1)]}
     r = await client.post("/api/v3/ingest/gh/demo/bench", json=payload)
     assert r.status_code == 200, r.text
-    body = r.json()
+    body = _data(r)
     assert body["inserted"] == 1
 
     # Repo was created.
@@ -84,7 +94,7 @@ async def test_ingest_then_list(client):
 
     r = await client.get("/api/v3/tests/gh/demo/bench")
     assert r.status_code == 200
-    results = r.json()
+    results = _data(r)
     assert len(results) == 3
 
 
@@ -95,7 +105,7 @@ async def test_list_filters_by_test_name(client):
     ]}
     await client.post("/api/v3/ingest/gh/demo/bench", json=payload)
     r = await client.get("/api/v3/tests/gh/demo/bench?test_name=tpch_q2")
-    results = r.json()
+    results = _data(r)
     assert len(results) == 1
     assert results[0]["test"]["test_name"] == "tpch_q2"
 
@@ -108,7 +118,7 @@ async def test_list_time_range(client):
     ]}
     await client.post("/api/v3/ingest/gh/demo/bench", json=payload)
     r = await client.get("/api/v3/tests/gh/demo/bench?since=2026-01-15T00:00:00&until=2026-02-15T00:00:00")
-    results = r.json()
+    results = _data(r)
     assert len(results) == 1
     assert results[0]["metrics"][0]["value"] == 2
 
@@ -121,7 +131,7 @@ async def test_list_narrows_metric(client):
     ]
     await client.post("/api/v3/ingest/gh/demo/bench", json={"runs": [run]})
     r = await client.get("/api/v3/tests/gh/demo/bench?metric=throughput")
-    results = r.json()
+    results = _data(r)
     assert len(results) == 1
     assert len(results[0]["metrics"]) == 1
     assert results[0]["metrics"][0]["name"] == "throughput"
@@ -137,7 +147,7 @@ async def test_list_narrows_metric_multi(client):
     ]
     await client.post("/api/v3/ingest/gh/demo/bench", json={"runs": [run]})
     r = await client.get("/api/v3/tests/gh/demo/bench?metric=latency&metric=errors")
-    results = r.json()
+    results = _data(r)
     assert len(results) == 1
     names = {m["name"] for m in results[0]["metrics"]}
     assert names == {"latency", "errors"}
@@ -146,14 +156,14 @@ async def test_list_narrows_metric_multi(client):
 async def test_unknown_route_404(client):
     r = await client.get("/api/v3/nonsense")
     assert r.status_code == 404
-    assert "no route" in r.json()["error"]
+    assert "no route" in _errs(r)
 
 
 async def test_ingest_schema_validation_rejects_bad_payload(client):
     # Missing "runs" at top level.
     r = await client.post("/api/v3/ingest/gh/demo/bench", json={"nope": []})
     assert r.status_code == 400
-    assert "validation" in r.json()["error"]
+    assert "validation" in _errs(r)
 
 
 async def test_ingest_schema_validation_rejects_run_without_metrics(client):
@@ -194,10 +204,10 @@ async def test_benchzoo_shaped_end_to_end(client):
     ]
     r = await client.post("/api/v3/ingest/gh/turso/turso", json={"runs": runs})
     assert r.status_code == 200
-    assert r.json()["inserted"] == 5
+    assert _data(r)["inserted"] == 5
 
     r = await client.get("/api/v3/tests/gh/turso/turso?test_name=sleep_bench&metric=wall_time")
-    data = r.json()
+    data = _data(r)
     assert len(data) == 5
     # Sorted by commit time ascending → values come out monotonically increasing.
     values = [d["metrics"][0]["value"] for d in data]
@@ -218,7 +228,7 @@ async def test_facets_returns_varying_and_timestamp_span(client):
 
     r = await client.get("/api/v3/tests/gh/foo/bar/facets")
     assert r.status_code == 200
-    body = r.json()
+    body = _data(r)
     assert body["count"] == 3
     assert body["facets"]["branch"] == ["main"]
     assert "branch" not in body["varying"]
@@ -234,7 +244,7 @@ async def test_facets_narrow_when_filter_applied(client):
         ]})
     # With runner=intel filter, only that value remains.
     r = await client.get("/api/v3/tests/gh/foo/bar/facets?runner=intel")
-    body = r.json()
+    body = _data(r)
     assert body["facets"]["runner"] == ["intel"]
     assert "runner" not in body["varying"]
 
@@ -245,7 +255,7 @@ async def test_list_filters_on_runner(client):
             _bz_run("t", 1, runner=runner, sha=f"s-{runner}")
         ]})
     r = await client.get("/api/v3/tests/gh/foo/bar?runner=arm")
-    body = r.json()
+    body = _data(r)
     assert len(body) == 1
     assert body[0]["run"]["runner"] == "arm"
 
@@ -259,7 +269,7 @@ async def test_facets_surfaces_test_params(client):
                     sha=f"s-{size}")
         ]})
     r = await client.get("/api/v3/tests/gh/foo/bar/facets")
-    body = r.json()
+    body = _data(r)
     assert "args" in body["facets"]
     assert set(body["facets"]["args"]) == {"64", "512", "4096"}
     assert "args" in body["varying"]
@@ -273,7 +283,7 @@ async def test_list_filters_on_test_params(client):
         ]})
     # Multi-select via repeated params — real-world case for gbench arg ranges.
     r = await client.get("/api/v3/tests/gh/foo/bar?args=64&args=4096")
-    body = r.json()
+    body = _data(r)
     assert len(body) == 2
     assert {d["test"]["params"]["args"] for d in body} == {"64", "4096"}
 
@@ -290,6 +300,6 @@ async def test_filter_value_containing_commas(client):
         ]})
     resp = await client.get("/api/v3/tests/gh/foo/bar",
                             params=[("runner", nasty)])
-    body = resp.json()
+    body = _data(resp)
     assert len(body) == 1
     assert body[0]["run"]["runner"] == nasty

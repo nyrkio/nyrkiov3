@@ -251,6 +251,29 @@ def _commit_sub_doc(commit_info: dict, repo: str | None = None) -> dict:
     return out
 
 
+def _record_unparsed(diagnostics, artifact, member, content, *, sniff, error,
+                     cap=10, sample_len=800):
+    """Record one diagnostic for content the ingest couldn't parse, so the
+    caller can see WHY (the sniff result/error) and WHAT (a content sample)
+    without re-fetching from GitHub. Deduped by (artifact, file); capped."""
+    if diagnostics is None or len(diagnostics) >= cap:
+        return
+    key = (artifact, member)
+    if any(d.get("_key") == key for d in diagnostics):
+        return
+    text = (content.decode("utf-8", errors="replace")
+            if isinstance(content, (bytes, bytearray)) else str(content))
+    diagnostics.append({
+        "_key": key,
+        "artifact": artifact,
+        "file": member,
+        "bytes": len(content),
+        "sniff": sniff,        # "framework/format", bare framework, or None
+        "error": error,        # why it was skipped
+        "sample": text[:sample_len],
+    })
+
+
 def _insert_parsed(parsed, *, runs_coll, commit_with_ref, runner,
                    workflow_filename, repo_doc, absolute, source):
     """Turn benchzoo-parsed entries into stored docs; return count inserted.
@@ -289,6 +312,7 @@ def ingest_workflow_run(
     default_parser=None,
     step_name: str | None = None,
     job_filter=None,
+    diagnostics: list | None = None,
 ) -> int:
     """Pull logs for every successful job in ``run``, parse, insert.
 
@@ -389,22 +413,36 @@ def ingest_workflow_run(
                 continue
             content = zf.read(member)
             parser = pinned_parser
+            spec = None
             if parser is None:
                 from benchzoo import sniff as _sniff_content
                 from benchzoo.parsers import find_parser as _find_parser
-                framework = _sniff_content(content)
-                if framework is None:
+                spec = _sniff_content(content)
+                if spec is None:
                     LOG.info("artifact %s/%s didn't match any known format; skipping",
                              art.get("name"), member)
+                    _record_unparsed(diagnostics, art.get("name", ""), member,
+                                     content, sniff=None, error="sniff: no match")
                     continue
                 try:
-                    parser = _find_parser(*framework.split("/", 1))
+                    parser = _find_parser(*spec.split("/", 1))
                 except (KeyError, ValueError) as e:
                     LOG.info("artifact %s/%s: no parser for %s (%s); skipping",
-                             art.get("name"), member, framework, e)
+                             art.get("name"), member, spec, e)
+                    _record_unparsed(diagnostics, art.get("name", ""), member,
+                                     content, sniff=spec, error=f"find_parser: {e}")
                     continue
-            parsed = parser.parse(content)
+            try:
+                parsed = parser.parse(content)
+            except Exception as e:
+                LOG.info("artifact %s/%s: parser %s raised (%s); skipping",
+                         art.get("name"), member, spec, e)
+                _record_unparsed(diagnostics, art.get("name", ""), member,
+                                 content, sniff=spec, error=f"parse: {type(e).__name__}: {e}")
+                continue
             if not parsed:
+                _record_unparsed(diagnostics, art.get("name", ""), member,
+                                 content, sniff=spec, error="parser returned 0 runs")
                 continue
             n = _insert_parsed(
                 parsed, runs_coll=runs_coll, commit_with_ref=commit_with_ref,
@@ -477,28 +515,53 @@ def ingest_workflow_history(
     job_filter=None,
     branch: str | None = None,
     max_pages: int = 5,
+    diagnostics: list | None = None,
 ) -> dict:
-    """Walk workflow history newest-first and ingest each successful run."""
+    """Walk workflow history newest-first and ingest each successful run.
+
+    ``diagnostics``: optional list that collects per-artifact records for
+    content that sniff/the known parsers couldn't handle — ``{artifact,
+    file, bytes, sniff, error, sample}``. Recorded whenever the
+    deterministic path fails, INDEPENDENT of any later LLM fallback (so
+    the gap is always visible even when the LLM rescues the ingest).
+    Returned under the summary's ``unparsed`` key (deduped, capped)."""
     runs = client.list_workflow_runs(
         owner, repo, workflow_filename,
         branch=branch, status="success", max_pages=max_pages,
     )
+    if diagnostics is None:
+        diagnostics = []
     inserted_total = 0
     seen = 0
-    for wrun in runs:
+    for idx, wrun in enumerate(runs):
         seen += 1
         try:
             n = ingest_workflow_run(
                 client=client, store=store, owner=owner, repo=repo,
                 run=wrun, parsers=parsers, default_parser=parser,
                 step_name=step_name, job_filter=job_filter,
+                diagnostics=diagnostics,
             )
         except Exception as e:
             LOG.exception("ingest failed for run %s: %s", wrun.get("id"), e)
             continue
         inserted_total += n
         LOG.info("run %s @ %s: +%d benchmarks", wrun["id"], wrun.get("head_sha", "")[:7], n)
-    return {"runs_seen": seen, "benchmarks_inserted": inserted_total}
+        # Early-bail: a workflow emits one benchmark format across all its
+        # runs. If the NEWEST run (idx 0) yields nothing parseable, the rest
+        # will too — don't waste time downloading the whole history. The
+        # newest run's diagnostics already captured samples + sniff results
+        # explaining the gap.
+        if idx == 0 and n == 0:
+            LOG.info("workflow %s: newest run parsed 0 benchmarks; sniff "
+                     "matched nothing — skipping the remaining %d run(s)",
+                     workflow_filename, max(0, len(runs) - 1))
+            break
+    summary = {"runs_seen": seen, "benchmarks_inserted": inserted_total}
+    if diagnostics:
+        summary["unparsed"] = [{k: v for k, v in d.items() if k != "_key"}
+                               for d in diagnostics]
+    return summary
 
 
 def handle_workflow_run_event(

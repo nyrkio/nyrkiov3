@@ -431,7 +431,16 @@ def build_app(app=None, recent_cp_days=14):
                     owner=owner, repo=repo,
                     workflow_filename=workflow,
                 )
-                LOG.info("backfill %s/%s (%s): %s", owner, repo, workflow, summary)
+                unparsed = summary.get("unparsed", [])
+                LOG.info("backfill %s/%s (%s): %d runs seen, %d benchmarks, "
+                         "%d unrecognised format(s)", owner, repo, workflow,
+                         summary["runs_seen"], summary["benchmarks_inserted"],
+                         len(unparsed))
+                for u in unparsed:
+                    LOG.info("  UNPARSED %s/%s (%d bytes) sniff=%r error=%s\n"
+                             "    sample: %s", u["artifact"], u["file"],
+                             u["bytes"], u["sniff"], u["error"],
+                             u["sample"][:500].replace("\n", "\\n"))
             except Exception:
                 LOG.exception("backfill failed for %s/%s", owner, repo)
         app.background.submit(work)

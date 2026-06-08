@@ -5,10 +5,12 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from purejson import Document, Collection
 from extjson import ObjectId, dumps, utcnow, parse_date, to_utc, UTC
 from jsonee import Request, Response, HTTPError, InMemoryStore
+from jsonee.app import JsonEE
 
 from .config import _build_serve_parser
 from . import auth as _auth
@@ -221,8 +223,38 @@ def _finalise_run(raw, *, repo_id, absolute, default_source):
     return doc
 
 
-def build_app(app, recent_cp_days=14):
-    """Things specific to this app"""
+def _build_default_app():
+    """A minimal, self-contained app for tests and quick demos.
+
+    The real entrypoint (``server.main``) hands ``build_app`` a fully
+    wired JsonEE instance — store opened from config, background
+    executor, auth_config from CLI/env. This builds the equivalent with
+    sensible defaults: an in-memory store, a small background executor,
+    and auth_config from ``NYRKIO_*`` env vars (all empty by default, so
+    the auth endpoints honestly report "not configured")."""
+    app = JsonEE(app_name="nyrkiov3", schema_registry=SCHEMAS)
+    app.store = InMemoryStore()
+    app.background = ThreadPoolExecutor(
+        max_workers=2, thread_name_prefix="nyrkio-bg")
+    app.auth_config = {
+        "client_id": os.environ.get("NYRKIO_GITHUB_CLIENT_ID", ""),
+        "client_secret": os.environ.get("NYRKIO_GITHUB_CLIENT_SECRET", ""),
+        "session_secret": os.environ.get("NYRKIO_SESSION_SECRET", ""),
+        "base_url": os.environ.get("NYRKIO_BASE_URL", ""),
+        "webhook_base_url": os.environ.get("NYRKIO_BASE_URL", ""),
+    }
+    return app
+
+
+def build_app(app=None, recent_cp_days=14):
+    """Attach the nyrkiov3 routes to a JsonEE ``app`` and return it.
+
+    ``app`` is normally a fully-wired JsonEE instance built by
+    ``server.main`` (store opened, background executor, auth_config set).
+    Pass ``app=None`` for a self-contained default app backed by an
+    in-memory store — convenient for tests and quick demos."""
+    if app is None:
+        app = _build_default_app()
     # `recent_cp_days` is the "recent window": any commit within that many
     # days of now() is interesting enough to visit in the daily scan even
     # if it carries no change points; older commits only surface when they

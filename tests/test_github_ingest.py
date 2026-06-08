@@ -247,9 +247,9 @@ async def test_webhook_returns_202_and_runs_ingest_in_background(fake_client, mo
         )
 
     assert r.status_code == 202, r.text
-    body = r.json()
-    assert body["accepted"] is True
-    assert body["run_id"] == fake_client._runs[0]["id"]
+    data = r.json()["data"]  # JsonEE wraps the body in a {data, _links} envelope
+    assert data["accepted"] is True
+    assert data["run_id"] == fake_client._runs[0]["id"]
 
     # Drain the executor to ensure the background task finished.
     app.background.shutdown(wait=True)
@@ -271,7 +271,7 @@ async def test_webhook_ignores_non_workflow_run_event():
             headers={"x-github-event": "ping"},
         )
     assert r.status_code == 200
-    assert r.json()["ignored"] is True
+    assert r.json()["data"]["ignored"] is True
 
 
 @pytest.mark.asyncio

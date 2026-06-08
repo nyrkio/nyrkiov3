@@ -285,7 +285,7 @@ def build_app(app, recent_cp_days=14):
             gh_user = _auth.fetch_user(token)
         except Exception as e:
             raise HTTPError(502, f"github oauth failed: {e}")
-        users = store.collection("users")
+        users = app.store.collection("users")
         existing = users.find_one({"github_id": gh_user["id"]})
         user_doc = Document(
             github_id=gh_user["id"],
@@ -395,7 +395,7 @@ def build_app(app, recent_cp_days=14):
                 # dispatched via benchzoo.sniff. The workflow may
                 # legitimately run different benchmark tools per job.
                 summary = ingest_workflow_history(
-                    client=client, store=store,
+                    client=client, store=app.store,
                     owner=owner, repo=repo,
                     workflow_filename=workflow,
                 )
@@ -427,7 +427,7 @@ def build_app(app, recent_cp_days=14):
 
     @app.route("POST", "/api/v3/me/repos/{owner}/{repo}/connect")
     def connect_repo(request: Request):
-        u = _current_user(request, store, app.auth_config["session_secret"])
+        u = _current_user(request, app.store, app.auth_config["session_secret"])
         if not u:
             raise HTTPError(401, "not signed in")
         params = request["path_params"]
@@ -547,7 +547,7 @@ def build_app(app, recent_cp_days=14):
                 from .github_ingest import GitHubClient, handle_workflow_run_event
                 client = GitHubClient(token)
                 inserted = handle_workflow_run_event(
-                    client=client, store=store, payload=payload,
+                    client=client, store=app.store, payload=payload,
                     parsers=parsers, default_parser=default_parser,
                     step_name=getattr(app, "github_step_name", None),
                 )

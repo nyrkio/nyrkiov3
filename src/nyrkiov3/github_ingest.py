@@ -393,7 +393,7 @@ def ingest_workflow_run(
                              art.get("name"), member)
                     continue
                 try:
-                    parser = _find_parser(framework)
+                    parser = _find_parser(*framework.split("/", 1))
                 except (KeyError, ValueError) as e:
                     LOG.info("artifact %s/%s: no parser for %s (%s); skipping",
                              art.get("name"), member, framework, e)
@@ -401,13 +401,20 @@ def ingest_workflow_run(
             parsed = parser.parse(content)
             if not parsed:
                 continue
-            inserted += _insert_parsed(
+            n = _insert_parsed(
                 parsed, runs_coll=runs_coll, commit_with_ref=commit_with_ref,
                 runner=runner_name, workflow_filename=workflow_filename,
                 repo_doc=repo_doc, absolute=absolute,
                 source={"kind": "github_actions_artifact", "run_id": run["id"],
                         "artifact": art.get("name", ""), "file": member,
                         "workflow": workflow_filename})
+            inserted += n
+            if n:
+                # One artifact = one logical output, often uploaded in
+                # several formats (output.json + output.csv + output.txt).
+                # Take the first representation that parses and skip the
+                # rest, so the same runs aren't counted two or three times.
+                break
     if inserted:
         return inserted
 
@@ -434,7 +441,7 @@ def ingest_workflow_run(
                          job["id"])
                 continue
             try:
-                parser = _find_parser(framework)
+                parser = _find_parser(*framework.split("/", 1))
             except (KeyError, ValueError) as e:
                 LOG.info("job %s: no parser for framework %s (%s); skipping",
                          job["id"], framework, e)

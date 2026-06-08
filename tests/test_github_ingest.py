@@ -20,15 +20,18 @@ BENCHZOO_DATA = pathlib.Path(__file__).parent / "fixtures"
 
 
 # ---------------------------------------------------------------------------
-# A tiny in-memory "GitHub" — implements the 3 methods the ingester calls.
+# A tiny in-memory "GitHub" — implements the methods the ingester calls.
 # ---------------------------------------------------------------------------
 
 class FakeGitHub:
-    def __init__(self, *, runs, jobs, logs, commits):
+    def __init__(self, *, runs, jobs, logs, commits,
+                 artifacts=None, artifact_zips=None):
         self._runs = runs
         self._jobs = jobs  # run_id -> [job]
         self._logs = logs  # job_id -> str
         self._commits = commits  # sha -> commit dict
+        self._artifacts = artifacts or {}  # run_id -> [artifact dict]
+        self._artifact_zips = artifact_zips or {}  # artifact_id -> zip bytes
 
     def list_workflow_runs(self, owner, repo, workflow, **kwargs):
         return list(self._runs)
@@ -41,6 +44,14 @@ class FakeGitHub:
 
     def get_commit(self, owner, repo, sha):
         return self._commits[sha]
+
+    def list_run_artifacts(self, owner, repo, run_id):
+        # Default empty: ingest then falls through to the log path, which
+        # is what these tests exercise.
+        return list(self._artifacts.get(run_id, []))
+
+    def download_artifact_zip(self, owner, repo, artifact_id):
+        return self._artifact_zips[artifact_id]
 
 
 # A tiny google-benchmark text blob with a GH Actions timestamp prefix.

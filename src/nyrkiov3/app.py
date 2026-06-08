@@ -666,7 +666,7 @@ def build_app(app, recent_cp_days=14):
                 detail=preview,
             )
         try:
-            parser_mod = find_parser(framework)
+            parser_mod = find_parser(*framework.split("/", 1))
         except (KeyError, ValueError) as e:
             raise HTTPError(
                 500,

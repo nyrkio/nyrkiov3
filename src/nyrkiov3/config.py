@@ -30,7 +30,6 @@ DEFAULT_MONGO_DB = "nyrkio"
 DEFAULT_BIND = "127.0.0.1:8123"
 DEFAULT_BASE_URL = "https://nyrkio.com"
 DEFAULT_STORAGE_PATH = "~/data/secantus"  # mirrors app.DEFAULT_STORAGE_PATH
-DEFAULT_SNAPSHOT_INTERVAL_S = 60.0
 
 # Exposed so tests can monkeypatch a clean discovery list, and so callers
 # can introspect where config is read from.
@@ -95,16 +94,9 @@ def _build_sync_parser(p):
           help="optional ##[group] step name to slice the log to")
     p.add("--branch", default=None)
     p.add("--max-pages", type=int, default=5)
-    # Snapshot location for nyrkio-sync's InMemoryStore. Reuses the
-    # STORAGE_PATH env var (the snapshot's parent is the storage dir).
-    p.add("--snapshot-path", env_var=pref + "STORAGE_PATH",
-          default=os.path.join(os.path.expanduser(DEFAULT_STORAGE_PATH),
-                               "secantus.snapshot"),
-          help="where the InMemoryStore snapshots to disk")
-    p._jsonee_path_options.append("snapshot_path")
-    p.add("--snapshot-interval", env_var=pref + "SNAPSHOT_INTERVAL",
-          type=float, default=DEFAULT_SNAPSHOT_INTERVAL_S,
-          help="seconds between snapshots (default %(default)s)")
+    # --storage-path (where the embedded secantusdb persists; secantusdb
+    # is the on-disk stand-in for FerretDB/MongoDB) is already provided by
+    # the base JsonEE parser, defaulted via _base_parser. Don't re-add it.
     p.add("--github-token", env_var=pref + "APP_GITHUB_PAT", default=None,
           help="GitHub PAT; CLAUDE_GITHUB_PAT and GITHUB_TOKEN are "
                "checked as fallbacks")

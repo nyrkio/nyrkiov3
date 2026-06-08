@@ -303,3 +303,34 @@ async def test_filter_value_containing_commas(client):
     body = _data(resp)
     assert len(body) == 1
     assert body[0]["run"]["runner"] == nasty
+
+
+async def test_backfill_jobs_endpoint_reports_latest_event_with_diagnostics(app, client):
+    """The append-only backfill_jobs log collapses to the latest event per
+    job, and the terminal `done` event carries the unparsed diagnostics so a
+    client can see *why* a connect produced no data."""
+    coll = app.store.collection("backfill_jobs")
+    jid = "deadbeefdeadbeefdeadbeef"
+    t0 = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    t1 = t0 + datetime.timedelta(seconds=1)
+    coll.insert_one({"job_id": jid, "repo": "o/r", "workflow": "bench.yml",
+                     "state": "running", "at": t0})
+    coll.insert_one({"job_id": jid, "repo": "o/r", "workflow": "bench.yml",
+                     "state": "done", "at": t1, "runs_seen": 3,
+                     "benchmarks_inserted": 0,
+                     "unparsed": [{"artifact": "a", "file": "out.txt",
+                                   "bytes": 10, "sniff": None, "error": None,
+                                   "sample": "cargo noise..."}]})
+
+    jobs = _data(await client.get("/api/v3/public/jobs"))["jobs"]
+    assert len(jobs) == 1               # two events, one job
+    j = jobs[0]
+    assert j["state"] == "done"         # latest, not the earlier "running"
+    assert j["benchmarks_inserted"] == 0
+    assert j["unparsed"][0]["file"] == "out.txt"
+
+    one = _data(await client.get(f"/api/v3/public/jobs/{jid}"))
+    assert one["state"] == "done"
+
+    missing = await client.get("/api/v3/public/jobs/nope")
+    assert missing.status_code == 404

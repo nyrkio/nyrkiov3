@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from purejson import Document, Collection
 from extjson import ObjectId, dumps, utcnow, parse_date, to_utc, UTC
-from jsonee import Request, Response, HTTPError, InMemoryStore
+from jsonee import Request, Response, HTTPError, open_store
 from jsonee.app import JsonEE
 
 from .config import _build_serve_parser
@@ -229,11 +229,12 @@ def _build_default_app():
     The real entrypoint (``server.main``) hands ``build_app`` a fully
     wired JsonEE instance — store opened from config, background
     executor, auth_config from CLI/env. This builds the equivalent with
-    sensible defaults: an in-memory store, a small background executor,
-    and auth_config from ``NYRKIO_*`` env vars (all empty by default, so
-    the auth endpoints honestly report "not configured")."""
+    sensible defaults: an ephemeral embedded secantus store (``:memory:``),
+    a small background executor, and auth_config from ``NYRKIO_*`` env vars
+    (all empty by default, so the auth endpoints honestly report "not
+    configured")."""
     app = JsonEE(app_name="nyrkiov3", schema_registry=SCHEMAS)
-    app.store = InMemoryStore()
+    app.store = open_store()
     app.background = ThreadPoolExecutor(
         max_workers=2, thread_name_prefix="nyrkio-bg")
     app.auth_config = {
@@ -412,17 +413,48 @@ def build_app(app=None, recent_cp_days=14):
             })
         return Collection(out)
 
+    def _record_job(job_id, owner, repo, workflow, state, **fields):
+        """Append a backfill job event to the ``backfill_jobs`` collection.
+
+        Append-only (the store has no in-place update): each state
+        transition is its own document, all sharing one ``job_id``. The
+        read endpoint returns the latest event per job. This is how a
+        client sees *why* a backfill produced nothing — the unparsed-format
+        diagnostics ride along on the terminal ``done`` event, instead of
+        vanishing into the server log."""
+        doc = {
+            "job_id": job_id,
+            "repo": f"{owner}/{repo}",
+            "workflow": workflow,
+            "state": state,
+            "at": utcnow(),
+        }
+        doc.update(fields)
+        try:
+            app.store.collection("backfill_jobs").insert_one(doc)
+        except Exception:
+            LOG.exception("could not record backfill job event")
+
     def _submit_backfill(owner: str, repo: str, token: str,
                         workflow_filename: str | None = None):
-        """Queue a best-effort backfill for the given repo."""
+        """Queue a best-effort backfill for the given repo.
+
+        Returns the ``job_id`` (str) so the caller can hand it back to the
+        client, who polls ``GET /api/v3/public/jobs/{job_id}``."""
+        job_id = str(ObjectId())
+
         def work():
+            workflow = workflow_filename
             try:
                 from .github_ingest import GitHubClient, ingest_workflow_history
                 client = GitHubClient(token)
                 workflow = workflow_filename or _detect_workflow(client, owner, repo)
                 if not workflow:
                     LOG.warning("no benchmark workflow found on %s/%s", owner, repo)
+                    _record_job(job_id, owner, repo, workflow_filename,
+                                "error", error="no benchmark workflow found")
                     return
+                _record_job(job_id, owner, repo, workflow, "running")
                 # No parser= pinned: each job's log is sniffed and
                 # dispatched via benchzoo.sniff. The workflow may
                 # legitimately run different benchmark tools per job.
@@ -441,9 +473,16 @@ def build_app(app=None, recent_cp_days=14):
                              "    sample: %s", u["artifact"], u["file"],
                              u["bytes"], u["sniff"], u["error"],
                              u["sample"].replace("\n", "\\n"))
-            except Exception:
+                _record_job(job_id, owner, repo, workflow, "done",
+                            runs_seen=summary["runs_seen"],
+                            benchmarks_inserted=summary["benchmarks_inserted"],
+                            unparsed=unparsed)
+            except Exception as e:
                 LOG.exception("backfill failed for %s/%s", owner, repo)
+                _record_job(job_id, owner, repo, workflow, "error",
+                            error=f"{type(e).__name__}: {e}")
         app.background.submit(work)
+        return job_id
 
     # Workflows whose name or filename mentions one of these are treated
     # as likely benchmark sources: flagged ``recommended`` in the picker
@@ -569,13 +608,47 @@ def build_app(app=None, recent_cp_days=14):
                 raise HTTPError(502, f"github workflows: {e}")
             return Document(repo=f"{owner}/{repo}", needs_selection=True,
                             workflows=available)
-        for wf in workflows:
-            _submit_backfill(owner, repo, token, wf)
+        jobs = {wf: _submit_backfill(owner, repo, token, wf)
+                for wf in workflows}
         return Response(
             body=Document(accepted=True, repo=f"{owner}/{repo}",
-                          workflows=workflows),
+                          workflows=workflows, jobs=jobs),
             status=202,
         )
+
+    def _latest_job_events(filter_=None):
+        """Collapse the append-only ``backfill_jobs`` log to one (latest)
+        event per ``job_id``, newest first."""
+        events = list(app.store.collection("backfill_jobs").find(filter_ or {}))
+        latest: dict[str, dict] = {}
+        for e in events:
+            jid = e.get("job_id")
+            prev = latest.get(jid)
+            if prev is None or e.get("at") and e["at"] >= prev.get("at"):
+                latest[jid] = e
+        out = [dict(e) for e in latest.values()]
+        for e in out:
+            e.pop("_id", None)
+        out.sort(key=lambda e: e["at"], reverse=True)
+        return out
+
+    @app.route("GET", "/api/v3/public/jobs")
+    def list_jobs(request: Request):
+        """Recent backfill jobs (latest event per job), newest first.
+
+        The terminal ``done`` event carries ``runs_seen``,
+        ``benchmarks_inserted`` and the ``unparsed`` diagnostics — so a
+        client can see *why* a connect produced no data without reading
+        server logs."""
+        return Document(jobs=_latest_job_events())
+
+    @app.route("GET", "/api/v3/public/jobs/{job_id}")
+    def get_job(request: Request):
+        job_id = request["path_params"]["job_id"]
+        events = _latest_job_events({"job_id": job_id})
+        if not events:
+            raise HTTPError(404, f"no such job {job_id}")
+        return Document(events[0])
 
     @app.route("POST", "/api/v3/webhooks/github")
     def github_webhook(request: Request):

@@ -184,7 +184,7 @@ def test_sync_minimal(monkeypatch):
     assert cfg["workflow"] == "ci.yml"
     assert cfg["parser"] == "google-benchmark/text"
     assert cfg["github_token"] == "tok"
-    assert cfg["snapshot_interval"] == pytest.approx(60.0)
+    assert cfg["storage_path"].endswith("secantus")
 
 
 def test_sync_github_token_fallback_order(monkeypatch):

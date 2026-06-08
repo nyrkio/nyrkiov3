@@ -9,8 +9,9 @@ flags, ``NYRKIO_*`` env vars, or YAML config files (see
 ``$NYRKIO_APP_GITHUB_PAT``, ``$CLAUDE_GITHUB_PAT``, or
 ``$GITHUB_TOKEN`` — whichever is set first wins.
 
-Writes straight to the configured snapshot path. Intended for manual
-backfills; the webhook path is the long-term answer."""
+Writes straight to the configured storage directory (embedded
+secantusdb). Intended for manual backfills; the webhook path is the
+long-term answer."""
 from __future__ import annotations
 
 import logging
@@ -58,28 +59,32 @@ def main(argv: list[str] | None = None) -> int:
 
     # Local store — skip the HTTP hop for a CLI invocation. Imported
     # lazily so `nyrkio-sync -h` doesn't pay the jsonee import cost.
-    from jsonee import InMemoryStore
+    # Embedded secantusdb persisted to the storage dir (the on-disk
+    # stand-in for FerretDB/MongoDB); set NYRKIO_MONGO_URI to point at a
+    # real server instead.
+    from jsonee import open_store
     from .github_ingest import GitHubClient, ingest_workflow_history
 
-    snapshot_path = cfg["snapshot_path"]
-    os.makedirs(os.path.dirname(snapshot_path), exist_ok=True)
-    store = InMemoryStore(snapshot_path=snapshot_path,
-                          snapshot_interval_s=cfg["snapshot_interval"])
+    storage_path = cfg["storage_path"]
+    os.makedirs(storage_path, exist_ok=True)
+    store = open_store(storage_path=storage_path)
     client = GitHubClient(cfg["github_token"])
 
-    summary = ingest_workflow_history(
-        client=client, store=store,
-        owner=owner, repo=repo,
-        workflow_filename=cfg["workflow"],
-        parser=parser,
-        step_name=cfg["step"],
-        branch=cfg["branch"],
-        max_pages=cfg["max_pages"],
-    )
-    store.stop()  # final flush
+    try:
+        summary = ingest_workflow_history(
+            client=client, store=store,
+            owner=owner, repo=repo,
+            workflow_filename=cfg["workflow"],
+            parser=parser,
+            step_name=cfg["step"],
+            branch=cfg["branch"],
+            max_pages=cfg["max_pages"],
+        )
+    finally:
+        store.stop()  # close client, stop embedded server
     print(f"{summary['runs_seen']} workflow runs walked, "
           f"{summary['benchmarks_inserted']} benchmarks inserted into "
-          f"{snapshot_path}")
+          f"{storage_path}")
     return 0
 
 

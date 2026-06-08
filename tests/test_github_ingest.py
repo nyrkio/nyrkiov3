@@ -6,7 +6,7 @@ import pathlib
 import pytest
 
 from benchzoo.parsers import google_benchmark_text
-from jsonee import InMemoryStore
+from jsonee import open_store
 from nyrkiov3.github_ingest import (
     GitHubClient,
     _commit_sub_doc,
@@ -17,6 +17,16 @@ from nyrkiov3.github_ingest import (
 
 
 BENCHZOO_DATA = pathlib.Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def store():
+    """A fresh ephemeral embedded secantus store per test (``:memory:``)."""
+    s = open_store()
+    try:
+        yield s
+    finally:
+        s.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +142,7 @@ def test_slice_log_step_not_found_returns_empty():
     assert slice_log(_SAMPLE_LOG, step_name="Nonexistent") == ""
 
 
-def test_ingest_one_run_inserts_benchmarks(fake_client):
-    store = InMemoryStore()
+def test_ingest_one_run_inserts_benchmarks(fake_client, store):
     n = ingest_workflow_run(
         client=fake_client, store=store,
         owner="unodb-dev", repo="unodb",
@@ -154,9 +163,8 @@ def test_ingest_one_run_inserts_benchmarks(fake_client):
         assert r["source"]["run_id"] == 1001
 
 
-def test_ingest_skips_failed_jobs(fake_client):
+def test_ingest_skips_failed_jobs(fake_client, store):
     fake_client._jobs[1001][0]["conclusion"] = "failure"
-    store = InMemoryStore()
     n = ingest_workflow_run(
         client=fake_client, store=store,
         owner="unodb-dev", repo="unodb",
@@ -167,8 +175,7 @@ def test_ingest_skips_failed_jobs(fake_client):
     assert n == 0
 
 
-def test_job_filter_applies(fake_client):
-    store = InMemoryStore()
+def test_job_filter_applies(fake_client, store):
     n = ingest_workflow_run(
         client=fake_client, store=store,
         owner="unodb-dev", repo="unodb",
@@ -180,8 +187,7 @@ def test_job_filter_applies(fake_client):
     assert n == 0
 
 
-def test_webhook_event_dispatch(fake_client):
-    store = InMemoryStore()
+def test_webhook_event_dispatch(fake_client, store):
     payload = {
         "action": "completed",
         "workflow_run": fake_client._runs[0],
@@ -195,8 +201,7 @@ def test_webhook_event_dispatch(fake_client):
     assert n == 2
 
 
-def test_webhook_ignores_non_completed(fake_client):
-    store = InMemoryStore()
+def test_webhook_ignores_non_completed(fake_client, store):
     payload = {"action": "in_progress"}
     assert handle_workflow_run_event(
         client=fake_client, store=store, payload=payload,

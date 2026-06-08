@@ -252,10 +252,14 @@ def _commit_sub_doc(commit_info: dict, repo: str | None = None) -> dict:
 
 
 def _record_unparsed(diagnostics, artifact, member, content, *, sniff, error,
-                     cap=10, sample_len=800):
+                     cap=10, sample_len=1600):
     """Record one diagnostic for content the ingest couldn't parse, so the
     caller can see WHY (the sniff result/error) and WHAT (a content sample)
-    without re-fetching from GitHub. Deduped by (artifact, file); capped."""
+    without re-fetching from GitHub. Deduped by (artifact, file); capped.
+
+    The sample shows the HEAD and TAIL of the content — benchmark results
+    are often at the end of an otherwise-noisy log (e.g. criterion output
+    after a wall of cargo-compile lines), which a head-only sample misses."""
     if diagnostics is None or len(diagnostics) >= cap:
         return
     key = (artifact, member)
@@ -263,6 +267,13 @@ def _record_unparsed(diagnostics, artifact, member, content, *, sniff, error,
         return
     text = (content.decode("utf-8", errors="replace")
             if isinstance(content, (bytes, bytearray)) else str(content))
+    if len(text) > sample_len:
+        half = sample_len // 2
+        sample = (text[:half]
+                  + f"\n...[{len(text) - sample_len} chars elided]...\n"
+                  + text[-half:])
+    else:
+        sample = text
     diagnostics.append({
         "_key": key,
         "artifact": artifact,
@@ -270,7 +281,7 @@ def _record_unparsed(diagnostics, artifact, member, content, *, sniff, error,
         "bytes": len(content),
         "sniff": sniff,        # "framework/format", bare framework, or None
         "error": error,        # why it was skipped
-        "sample": text[:sample_len],
+        "sample": sample,
     })
 
 

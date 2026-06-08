@@ -440,7 +440,7 @@ def build_app(app=None, recent_cp_days=14):
                     LOG.info("  UNPARSED %s/%s (%d bytes) sniff=%r error=%s\n"
                              "    sample: %s", u["artifact"], u["file"],
                              u["bytes"], u["sniff"], u["error"],
-                             u["sample"][:500].replace("\n", "\\n"))
+                             u["sample"].replace("\n", "\\n"))
             except Exception:
                 LOG.exception("backfill failed for %s/%s", owner, repo)
         app.background.submit(work)

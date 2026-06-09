@@ -21,7 +21,7 @@ import sys
 
 from jsonee.app import JsonEE
 
-from .config import _build_serve_parser
+from .config import _build_serve_parser, apply_base_defaults
 from .app import SCHEMAS, build_app
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,6 +34,11 @@ def main(argv: list[str] | None = None) -> int:
     jsonapp = JsonEE(app_name="nyrkiov3", env_prefix="NYRKIO_", description="Nyrkiö continuous benchmarking analytics", schema_registry=SCHEMAS)
     p = jsonapp.parser()
     _build_serve_parser(p)
+    # Apply nyrkiov3's app-level defaults (storage_path=~/data/secantus,
+    # mongo_db, base_url, bind, config-file discovery) to the LIVE parser —
+    # otherwise the server falls back to JsonEE's generic defaults (an
+    # ephemeral store) and only an env var would point it at the real data.
+    apply_base_defaults(p)
 
     jsonapp.parse_args(argv)
     jsonapp.open_store()

@@ -31,21 +31,36 @@ DEFAULT_BIND = "127.0.0.1:8123"
 DEFAULT_BASE_URL = "https://nyrkio.com"
 DEFAULT_STORAGE_PATH = "~/data/secantus"  # mirrors app.DEFAULT_STORAGE_PATH
 
+# Static asset roots default to the repo's own dirs, computed relative to
+# this file: `static/` is a sibling of `src/` at the repo root, and
+# AuroraBorealis is a sibling repo. So a bare `nyrkio-serve` serves the UI
+# from any cwd, no config file or env var needed. server.main guards each
+# with os.path.isdir, so an installed wheel (where these don't ship)
+# silently runs API-only instead of breaking.
+_PKG_DIR = os.path.dirname(os.path.abspath(__file__))          # src/nyrkiov3
+_REPO_ROOT = os.path.dirname(os.path.dirname(_PKG_DIR))         # repo root
+DEFAULT_STATIC_DIR = os.path.join(_REPO_ROOT, "static")
+DEFAULT_AURORA_DIR = os.path.join(
+    os.path.dirname(_REPO_ROOT), "AuroraBorealis", "static")
+
 # Exposed so tests can monkeypatch a clean discovery list, and so callers
 # can introspect where config is read from.
 DEFAULT_CONFIG_FILES = jsonee_config.default_config_files(APP_NAME)
 
 
-def _base_parser(prog: str, description: str = ""):
-    """A JsonEE parser carrying nyrkiov3's app-level defaults.
+def apply_base_defaults(p):
+    """Apply nyrkiov3's app-level defaults to a JsonEE serve/sync parser.
 
     :func:`jsonee.config.create_parser` registers the common service
     options with generic defaults; we override the few that differ for
-    this app (``mongo-db``, ``base-url``) and point discovery at *our*
-    (monkeypatch-able) :data:`DEFAULT_CONFIG_FILES`. CLI flags, env vars
-    and config files all still win over these defaults."""
-    p = jsonee_config.create_parser(
-        APP_NAME, prog=prog, description=description, env_prefix=ENV_PREFIX)
+    this app (``mongo-db``, ``base-url``, ``bind``, ``storage-path``) and
+    point discovery at *our* (monkeypatch-able) :data:`DEFAULT_CONFIG_FILES`.
+    CLI flags, env vars and config files all still win over these defaults.
+
+    Shared by :func:`_base_parser` (the standalone ``load_*_config`` path)
+    AND by :func:`nyrkiov3.server.main` on the live app's parser, so the
+    running server and the standalone loader resolve the same defaults —
+    e.g. ``storage_path`` → ``~/data/secantus`` without an env var."""
     p.set_defaults(
         mongo_db=DEFAULT_MONGO_DB,
         base_url=DEFAULT_BASE_URL,
@@ -56,6 +71,13 @@ def _base_parser(prog: str, description: str = ""):
     return p
 
 
+def _base_parser(prog: str, description: str = ""):
+    """A JsonEE parser carrying nyrkiov3's app-level defaults."""
+    p = jsonee_config.create_parser(
+        APP_NAME, prog=prog, description=description, env_prefix=ENV_PREFIX)
+    return apply_base_defaults(p)
+
+
 def _build_serve_parser(p):
     """Add the nyrkio-serve-specific options to a JsonEE parser ``p``.
 
@@ -63,11 +85,13 @@ def _build_serve_parser(p):
     :func:`nyrkiov3.server.main` on the live app's parser."""
     pref = p._jsonee_env_prefix
     # App-specific: static asset roots. Both are paths.
-    p.add("--static-dir", env_var=pref + "STATIC_DIR", default=None,
-          help="path to nyrkiov3/static/, mounted at /; omit to run API-only")
+    p.add("--static-dir", env_var=pref + "STATIC_DIR", default=DEFAULT_STATIC_DIR,
+          help="path to nyrkiov3/static/, mounted at / (default: the repo's "
+               "static/); pass an empty value to run API-only")
     p._jsonee_path_options.append("static_dir")
-    p.add("--aurora-dir", env_var=pref + "AURORA_DIR", default=None,
-          help="path to AuroraBorealis/static/, mounted at /js/lib/aurora/")
+    p.add("--aurora-dir", env_var=pref + "AURORA_DIR", default=DEFAULT_AURORA_DIR,
+          help="path to AuroraBorealis/static/, mounted at /js/lib/aurora/ "
+               "(default: the sibling AuroraBorealis repo)")
     p._jsonee_path_options.append("aurora_dir")
     # App-specific: GitHub OAuth + session secrets.
     p.add("--github-client-id", env_var=pref + "GITHUB_CLIENT_ID",

@@ -11,6 +11,11 @@
 # AuroraBorealis is a JS UI library, not a Python package — serve it in
 # dev with:  nyrkio-serve --aurora-dir ../AuroraBorealis/static
 
+# SecantusDB is the embedded MongoDB-wire store (jsonee.MongoStore talks to
+# it). Editable from source so dev uses our patched secantus (e.g. the
+# checkpoint-wait fix) rather than the PyPI pin jsonee would otherwise drag
+# in. Building it compiles a vendored WiredTiger (~30s, one-time).
+-e ../SecantusDB
 -e ../PureJson
 -e ../ExtendedJsonSchema
 -e ../JsonEE

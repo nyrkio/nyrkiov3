@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from purejson import Document, Collection
@@ -17,6 +18,14 @@ from . import auth as _auth
 
 
 LOG = logging.getLogger("nyrkiov3.app")
+
+# Serialise repo backfills. The embedded secantus store is thread-per-
+# connection behind a single global lock; under concurrent backfill load it
+# deadlocks (observed 2026-06-09: 4 simultaneous backfills -> 928 threads
+# wedged on a futex, store unresponsive). One backfill in flight at a time
+# keeps it healthy; the rest queue on this gate. Raise the bound only once
+# secantus handles concurrency (or NYRKIO_MONGO_URI points at real MongoDB).
+_BACKFILL_GATE = threading.BoundedSemaphore(1)
 
 
 SESSION_COOKIE = "nyrkio_session"
@@ -445,6 +454,8 @@ def build_app(app=None, recent_cp_days=14):
 
         def work():
             workflow = workflow_filename
+            _record_job(job_id, owner, repo, workflow_filename, "queued")
+            _BACKFILL_GATE.acquire()   # one backfill at a time (secantus concurrency)
             try:
                 from .github_ingest import GitHubClient, ingest_workflow_history
                 client = GitHubClient(token)
@@ -481,6 +492,8 @@ def build_app(app=None, recent_cp_days=14):
                 LOG.exception("backfill failed for %s/%s", owner, repo)
                 _record_job(job_id, owner, repo, workflow, "error",
                             error=f"{type(e).__name__}: {e}")
+            finally:
+                _BACKFILL_GATE.release()
         app.background.submit(work)
         return job_id
 

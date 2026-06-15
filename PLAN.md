@@ -1,6 +1,6 @@
 # nyrkiov3 — PLAN
 
-The application: analytics + change detection. Built on PureJson / ExtendedJsonSchema / JsonEE / ImplicitOpenApi / AuroraBorealis. Receives data from nyrkio-runner.
+The application: analytics + change detection. Built on PureJson / ExtendedJsonSchema / JsonEE / ImplicitOpenApi / AuroraBorealis. Receives data from various github projects and their benchmarks, via BenchZoo.
 
 ## Domain model
 
@@ -71,4 +71,3 @@ Either way: ship a **proper client library** for the backend API (the v2 ad-hoc 
 - Best case: a v2 user installs v3 and the historical-backfill feature ingests their last 3 months of GitHub workflow runs, giving them parity with their v2 history *without any migration tooling*. The wow-moment onboarding does the work.
 - Worst case: a user runs both for a while during evaluation. Fine.
 
-**Implication for nyrkio-runner:** new GitHub App registration, separate from v2. v2's app keeps running for its users.

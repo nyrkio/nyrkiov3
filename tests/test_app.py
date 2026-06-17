@@ -305,31 +305,35 @@ async def test_filter_value_containing_commas(client):
     assert body[0]["run"]["runner"] == nasty
 
 
-async def test_backfill_jobs_endpoint_reports_latest_event_with_diagnostics(app, client):
-    """The append-only backfill_jobs log collapses to the latest event per
-    job, and the terminal `done` event carries the unparsed diagnostics so a
-    client can see *why* a connect produced no data."""
-    coll = app.store.collection("backfill_jobs")
-    jid = "deadbeefdeadbeefdeadbeef"
-    t0 = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
-    t1 = t0 + datetime.timedelta(seconds=1)
-    coll.insert_one({"job_id": jid, "repo": "o/r", "workflow": "bench.yml",
-                     "state": "running", "at": t0})
-    coll.insert_one({"job_id": jid, "repo": "o/r", "workflow": "bench.yml",
-                     "state": "done", "at": t1, "runs_seen": 3,
-                     "benchmarks_inserted": 0,
-                     "unparsed": [{"artifact": "a", "file": "out.txt",
-                                   "bytes": 10, "sniff": None, "error": None,
-                                   "sample": "cargo noise..."}]})
+async def test_public_jobs_endpoint_reports_backfill_tasks_with_diagnostics(app, client):
+    """The /public/jobs endpoints read the JsonEE durable-task store
+    (kind=backfill). A terminal `done` task carries the unparsed diagnostics
+    so a client can see *why* a connect produced no data — and because it's a
+    persisted task, it survives a restart."""
+    coll = app.store.collection("_tasks")
+    tid = "deadbeefdeadbeefdeadbeef"
+    now = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
+    coll.insert_one({
+        "task_id": tid, "kind": "backfill", "attempts": 1,
+        "payload": {"owner": "o", "repo": "r", "workflow": "bench.yml"},
+        "state": "done", "created_at": now, "updated_at": now,
+        "result": {"repo": "o/r", "workflow": "bench.yml",
+                   "runs_seen": 3, "benchmarks_inserted": 0, "runs_skipped": 0,
+                   "unparsed": [{"artifact": "a", "file": "out.txt",
+                                 "bytes": 10, "sniff": None, "error": None,
+                                 "sample": "cargo noise..."}]},
+    })
 
     jobs = _data(await client.get("/api/v3/public/jobs"))["jobs"]
-    assert len(jobs) == 1               # two events, one job
+    assert len(jobs) == 1
     j = jobs[0]
-    assert j["state"] == "done"         # latest, not the earlier "running"
+    assert j["job_id"] == tid
+    assert j["repo"] == "o/r"
+    assert j["state"] == "done"
     assert j["benchmarks_inserted"] == 0
     assert j["unparsed"][0]["file"] == "out.txt"
 
-    one = _data(await client.get(f"/api/v3/public/jobs/{jid}"))
+    one = _data(await client.get(f"/api/v3/public/jobs/{tid}"))
     assert one["state"] == "done"
 
     missing = await client.get("/api/v3/public/jobs/nope")

@@ -544,8 +544,30 @@ def ingest_workflow_history(
         diagnostics = []
     inserted_total = 0
     seen = 0
+    skipped = 0
+    # Idempotency: skip a run already in the store, so a resumed or
+    # re-submitted backfill never double-inserts. Scope by the repo's _id
+    # plus the GitHub run id (stamped on every doc as ``source.run_id``).
+    # repo_doc is None on a first-ever backfill — the repo doc is created
+    # lazily inside ingest_workflow_run — and then there's nothing to skip.
+    runs_coll = store.collection("test_runs")
+    repo_doc = store.collection("repos").find_one(
+        {"absolute_name": f"gh/{owner}/{repo}"})
+    repo_oid = repo_doc["_id"] if repo_doc else None
+    if repo_oid is not None:
+        try:
+            runs_coll.create_index([("repo_id", 1), ("source.run_id", 1)])
+        except Exception:
+            LOG.debug("dedup index create failed (non-fatal)", exc_info=True)
     for idx, wrun in enumerate(runs):
         seen += 1
+        # Already ingested? Skip via `continue` (NOT a 0-insert return) so
+        # the idx==0 early-bail below isn't tricked into stopping a resume.
+        if repo_oid is not None and runs_coll.find_one(
+                {"repo_id": repo_oid, "source.run_id": wrun.get("id")}) is not None:
+            skipped += 1
+            LOG.info("run %s already ingested; skipping", wrun.get("id"))
+            continue
         try:
             n = ingest_workflow_run(
                 client=client, store=store, owner=owner, repo=repo,
@@ -569,6 +591,8 @@ def ingest_workflow_history(
                      workflow_filename, max(0, len(runs) - 1))
             break
     summary = {"runs_seen": seen, "benchmarks_inserted": inserted_total}
+    if skipped:
+        summary["runs_skipped"] = skipped
     if diagnostics:
         summary["unparsed"] = [{k: v for k, v in d.items() if k != "_key"}
                                for d in diagnostics]

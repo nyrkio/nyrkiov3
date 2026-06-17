@@ -163,6 +163,28 @@ def test_ingest_one_run_inserts_benchmarks(fake_client, store):
         assert r["source"]["run_id"] == 1001
 
 
+def test_ingest_workflow_history_is_idempotent(fake_client, store):
+    """A resumed or re-submitted backfill must not double-insert. The second
+    pass should skip the already-stored run and insert nothing new."""
+    from nyrkiov3.github_ingest import ingest_workflow_history
+    common = dict(client=fake_client, store=store, owner="unodb-dev",
+                  repo="unodb", workflow_filename="benchmarks.yml",
+                  parser=google_benchmark_text, step_name="Run benchmarks")
+    s1 = ingest_workflow_history(**common)
+    n1 = store.collection("test_runs").count()
+    assert n1 == 2
+    assert s1["benchmarks_inserted"] == 2
+    assert s1.get("runs_skipped", 0) == 0
+
+    # Re-run against the same store — exactly what resume() / a re-submit does.
+    s2 = ingest_workflow_history(**common)
+    n2 = store.collection("test_runs").count()
+    assert n2 == n1                          # no duplicate docs
+    assert s2["benchmarks_inserted"] == 0    # nothing re-inserted
+    assert s2["runs_seen"] == 1
+    assert s2["runs_skipped"] == 1           # the one run was skipped
+
+
 def test_ingest_skips_failed_jobs(fake_client, store):
     fake_client._jobs[1001][0]["conclusion"] = "failure"
     n = ingest_workflow_run(

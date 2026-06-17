@@ -422,80 +422,69 @@ def build_app(app=None, recent_cp_days=14):
             })
         return Collection(out)
 
-    def _record_job(job_id, owner, repo, workflow, state, **fields):
-        """Append a backfill job event to the ``backfill_jobs`` collection.
+    def _run_backfill(payload):
+        """Durable-task handler: ingest a repo's workflow history.
 
-        Append-only (the store has no in-place update): each state
-        transition is its own document, all sharing one ``job_id``. The
-        read endpoint returns the latest event per job. This is how a
-        client sees *why* a backfill produced nothing — the unparsed-format
-        diagnostics ride along on the terminal ``done`` event, instead of
-        vanishing into the server log."""
-        doc = {
-            "job_id": job_id,
-            "repo": f"{owner}/{repo}",
-            "workflow": workflow,
-            "state": state,
-            "at": utcnow(),
-        }
-        doc.update(fields)
+        Payload is ``{owner, repo, workflow}`` — deliberately NO token: that
+        is what lets the task be persisted and resumed across a restart. The
+        token is re-sourced here at run time from the app PAT, so a backfill
+        interrupted by a crash re-runs cleanly afterwards (ingest is now
+        idempotent — already-stored runs are skipped). The returned dict
+        rides on the task's terminal ``done`` event and is what
+        ``/public/jobs`` surfaces.
+
+        app-PAT only: the authenticated ``/connect`` path no longer threads a
+        user's OAuth token through here, so a *private* user repo would fail
+        (surfacing as an ``error`` task — visible, not silent). Persisting
+        per-user creds for durable private backfills is a follow-up."""
+        owner, repo = payload["owner"], payload["repo"]
+        workflow_filename = payload.get("workflow")
+        token = getattr(app, "github_token", None) or os.environ.get("CLAUDE_GITHUB_PAT", "")
+        if not token:
+            raise RuntimeError("no app-level github token configured")
+        _BACKFILL_GATE.acquire()   # one backfill at a time (secantus concurrency)
         try:
-            app.store.collection("backfill_jobs").insert_one(doc)
-        except Exception:
-            LOG.exception("could not record backfill job event")
+            from .github_ingest import GitHubClient, ingest_workflow_history
+            client = GitHubClient(token)
+            workflow = workflow_filename or _detect_workflow(client, owner, repo)
+            if not workflow:
+                raise RuntimeError("no benchmark workflow found")
+            # No parser= pinned: each job's log/artifact is sniffed and
+            # dispatched via benchzoo.sniff (a workflow may run different
+            # benchmark tools per job).
+            summary = ingest_workflow_history(
+                client=client, store=app.store,
+                owner=owner, repo=repo, workflow_filename=workflow,
+            )
+            unparsed = summary.get("unparsed", [])
+            LOG.info("backfill %s/%s (%s): %d runs seen, %d inserted, %d "
+                     "skipped, %d unrecognised format(s)", owner, repo, workflow,
+                     summary["runs_seen"], summary["benchmarks_inserted"],
+                     summary.get("runs_skipped", 0), len(unparsed))
+            for u in unparsed:
+                LOG.info("  UNPARSED %s/%s (%d bytes) sniff=%r error=%s",
+                         u["artifact"], u["file"], u["bytes"], u["sniff"], u["error"])
+            return {
+                "repo": f"{owner}/{repo}",
+                "workflow": workflow,
+                "runs_seen": summary["runs_seen"],
+                "runs_skipped": summary.get("runs_skipped", 0),
+                "benchmarks_inserted": summary["benchmarks_inserted"],
+                "unparsed": unparsed,
+            }
+        finally:
+            _BACKFILL_GATE.release()
 
-    def _submit_backfill(owner: str, repo: str, token: str,
-                        workflow_filename: str | None = None):
-        """Queue a best-effort backfill for the given repo.
+    app.tasks.register("backfill", _run_backfill)
 
-        Returns the ``job_id`` (str) so the caller can hand it back to the
-        client, who polls ``GET /api/v3/public/jobs/{job_id}``."""
-        job_id = str(ObjectId())
-
-        def work():
-            workflow = workflow_filename
-            _record_job(job_id, owner, repo, workflow_filename, "queued")
-            _BACKFILL_GATE.acquire()   # one backfill at a time (secantus concurrency)
-            try:
-                from .github_ingest import GitHubClient, ingest_workflow_history
-                client = GitHubClient(token)
-                workflow = workflow_filename or _detect_workflow(client, owner, repo)
-                if not workflow:
-                    LOG.warning("no benchmark workflow found on %s/%s", owner, repo)
-                    _record_job(job_id, owner, repo, workflow_filename,
-                                "error", error="no benchmark workflow found")
-                    return
-                _record_job(job_id, owner, repo, workflow, "running")
-                # No parser= pinned: each job's log is sniffed and
-                # dispatched via benchzoo.sniff. The workflow may
-                # legitimately run different benchmark tools per job.
-                summary = ingest_workflow_history(
-                    client=client, store=app.store,
-                    owner=owner, repo=repo,
-                    workflow_filename=workflow,
-                )
-                unparsed = summary.get("unparsed", [])
-                LOG.info("backfill %s/%s (%s): %d runs seen, %d benchmarks, "
-                         "%d unrecognised format(s)", owner, repo, workflow,
-                         summary["runs_seen"], summary["benchmarks_inserted"],
-                         len(unparsed))
-                for u in unparsed:
-                    LOG.info("  UNPARSED %s/%s (%d bytes) sniff=%r error=%s\n"
-                             "    sample: %s", u["artifact"], u["file"],
-                             u["bytes"], u["sniff"], u["error"],
-                             u["sample"].replace("\n", "\\n"))
-                _record_job(job_id, owner, repo, workflow, "done",
-                            runs_seen=summary["runs_seen"],
-                            benchmarks_inserted=summary["benchmarks_inserted"],
-                            unparsed=unparsed)
-            except Exception as e:
-                LOG.exception("backfill failed for %s/%s", owner, repo)
-                _record_job(job_id, owner, repo, workflow, "error",
-                            error=f"{type(e).__name__}: {e}")
-            finally:
-                _BACKFILL_GATE.release()
-        app.background.submit(work)
-        return job_id
+    def _submit_backfill(owner: str, repo: str, workflow_filename: str | None = None):
+        """Queue a durable, resumable backfill. Returns the task_id, which
+        doubles as the public job_id (poll ``GET /api/v3/public/jobs/{id}``).
+        A task left unfinished by a restart is re-dispatched on startup (see
+        :meth:`jsonee.DurableTasks.resume`)."""
+        return app.tasks.submit("backfill", {
+            "owner": owner, "repo": repo, "workflow": workflow_filename,
+        })
 
     # Workflows whose name or filename mentions one of these are treated
     # as likely benchmark sources: flagged ``recommended`` in the picker
@@ -545,7 +534,10 @@ def build_app(app=None, recent_cp_days=14):
         # We could also create a GitHub webhook here so future runs
         # stream in live; for now just a one-shot backfill. The webhook
         # hook-up lives in /connect-webhook as a follow-up.
-        _submit_backfill(owner, repo, u["access_token"], workflow)
+        # NB: the durable backfill runs under the app PAT, not this user's
+        # OAuth token — fine for public repos; private user repos await the
+        # OAuth-token-persistence follow-up.
+        _submit_backfill(owner, repo, workflow)
         return Response(
             body=Document(accepted=True, repo=f"{owner}/{repo}"),
             status=202,
@@ -624,7 +616,7 @@ def build_app(app=None, recent_cp_days=14):
         # A list, not a ``{workflow: job_id}`` map: workflow filenames
         # contain dots ("rust_perf.yml") and PureJson/DocumentDB forbid
         # dots in document keys.
-        jobs = [{"workflow": wf, "job_id": _submit_backfill(owner, repo, token, wf)}
+        jobs = [{"workflow": wf, "job_id": _submit_backfill(owner, repo, wf)}
                 for wf in workflows]
         return Response(
             body=Document(accepted=True, repo=f"{owner}/{repo}",
@@ -632,39 +624,45 @@ def build_app(app=None, recent_cp_days=14):
             status=202,
         )
 
-    def _latest_job_events(filter_=None):
-        """Collapse the append-only ``backfill_jobs`` log to one (latest)
-        event per ``job_id``, newest first."""
-        events = list(app.store.collection("backfill_jobs").find(filter_ or {}))
-        latest: dict[str, dict] = {}
-        for e in events:
-            jid = e.get("job_id")
-            prev = latest.get(jid)
-            if prev is None or e.get("at") and e["at"] >= prev.get("at"):
-                latest[jid] = e
-        out = [dict(e) for e in latest.values()]
-        for e in out:
-            e.pop("_id", None)
-        out.sort(key=lambda e: e["at"], reverse=True)
-        return out
+    def _job_view(t):
+        """Map a durable ``backfill`` task doc to the public job shape
+        (job_id / repo / workflow / state / at + the done-event metrics)."""
+        payload = t.get("payload") or {}
+        result = t.get("result") or {}
+        view = {
+            "job_id": t.get("task_id"),
+            "repo": result.get("repo")
+                    or f"{payload.get('owner')}/{payload.get('repo')}",
+            "workflow": result.get("workflow") or payload.get("workflow"),
+            "state": t.get("state"),
+            "at": t.get("updated_at"),
+        }
+        for k in ("runs_seen", "benchmarks_inserted", "runs_skipped", "unparsed"):
+            if k in result:
+                view[k] = result[k]
+        if t.get("error"):
+            view["error"] = t["error"]
+        return view
 
     @app.route("GET", "/api/v3/public/jobs")
     def list_jobs(request: Request):
-        """Recent backfill jobs (latest event per job), newest first.
+        """Recent backfill jobs, newest activity first.
 
-        The terminal ``done`` event carries ``runs_seen``,
+        Backed by the JsonEE durable-task store (kind=backfill), so jobs
+        survive a restart — an unfinished one is re-dispatched on startup.
+        The terminal ``done`` task carries ``runs_seen``,
         ``benchmarks_inserted`` and the ``unparsed`` diagnostics — so a
-        client can see *why* a connect produced no data without reading
-        server logs."""
-        return Document(jobs=_latest_job_events())
+        client sees *why* a connect produced no data without reading logs."""
+        tasks = app.tasks.list({"kind": "backfill"})
+        return Document(jobs=[_job_view(t) for t in tasks])
 
     @app.route("GET", "/api/v3/public/jobs/{job_id}")
     def get_job(request: Request):
         job_id = request["path_params"]["job_id"]
-        events = _latest_job_events({"job_id": job_id})
-        if not events:
+        t = app.tasks.get(job_id)
+        if not t or t.get("kind") != "backfill":
             raise HTTPError(404, f"no such job {job_id}")
-        return Document(events[0])
+        return Document(_job_view(t))
 
     @app.route("POST", "/api/v3/webhooks/github")
     def github_webhook(request: Request):

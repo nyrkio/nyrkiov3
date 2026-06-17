@@ -76,12 +76,11 @@
     #z-pager .counter { opacity: 0.7; text-align: center; min-width: 80px; }
 
     #commit-panel {
-      position: absolute; right: 0; top: 0; bottom: 0; width: 320px;
-      padding: 16px 18px; box-sizing: border-box;
+      position: absolute; right: 0; top: 0; width: auto; max-width: 300px;
+      padding: 12px 16px; box-sizing: border-box; text-align: right;
       background: linear-gradient(to left, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 100%);
       color: #cdd; font-size: 12px; z-index: 3;
       transform: translateX(100%); transition: transform 0.25s ease;
-      overflow-y: auto;
       pointer-events: none;  /* don't swallow pointermoves for the 3D canvas */
     }
     #commit-panel .close { pointer-events: auto; }
@@ -142,7 +141,7 @@
     #commit-panel a.sha, #commit-panel a.subject { pointer-events: auto;
       text-decoration: none; cursor: pointer; }
     #commit-panel a.sha:hover, #commit-panel a.subject:hover { text-decoration: underline; }
-    #commit-panel .subject { margin: 8px 0; font-size: 14px; color: #fff; display: block; }
+    #commit-panel .subject { margin: 4px 0 0; font-size: 11px; color: #cdd; display: block; }
     #commit-panel .meta { opacity: 0.7; margin: 4px 0; }
     #commit-panel .delta { margin-top: 14px; padding-top: 10px;
       border-top: 1px solid rgba(255,255,255,0.1); }
@@ -498,7 +497,6 @@
   </div>
 
   <div id="commit-panel">
-    <span class="close" id="cp-close">✕</span>
     <div id="cp-body"></div>
   </div>
 
@@ -559,7 +557,6 @@
 
     const panel = document.getElementById("commit-panel");
     const panelBody = document.getElementById("cp-body");
-    document.getElementById("cp-close").addEventListener("click", () => panel.classList.remove("open"));
 
     function fmtNum(x) {
       if (Math.abs(x) >= 1000) return x.toFixed(0);
@@ -592,67 +589,22 @@
       return `https://github.com/${c.repo}/commit/${c.sha}`;
     }
     function showPoint(p, siblings) {
+      // The cursor-wall card (in Aurora) now carries the full commit and
+      // benchmark detail in-scene. This corner panel is reduced to the one
+      // thing a canvas texture can't do: a click-through to the commit on
+      // GitHub — the sha plus a small-font subject, both linked.
       const c = p.commit || {};
       const sha = c.short_sha || (c.sha || "").slice(0, 7);
+      if (!sha) { panel.classList.remove("open"); return; }
       const href = commitLink(c);
+      const subjectText = c.message || "(no message)";
       const shaHtml = href
         ? `<a class="sha" href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${escHtml(sha)}</a>`
-        : `<div class="sha">${escHtml(sha)}</div>`;
-      const subjectText = c.message || "(no message)";
+        : `<span class="sha">${escHtml(sha)}</span>`;
       const subjectHtml = href
         ? `<a class="subject" href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${escHtml(subjectText)}</a>`
-        : `<div class="subject">${escHtml(subjectText)}</div>`;
-      const header = `
-        ${shaHtml}
-        ${subjectHtml}
-        <div class="meta">${escHtml(c.author || "?")} · ${escHtml(commitDate(c, p.timestamp))}${c.ref ? " · " + escHtml(c.ref) : ""}${c.repo ? " · " + escHtml(c.repo) : ""}</div>
-      `;
-      let body;
-      if (siblings && siblings.length > 0) {
-        // Multiple change points landed on this commit — list all,
-        // largest first. The visual highlight is on siblings[0].
-        const count = siblings.length;
-        const items = siblings.map(s => {
-          const u = s.mesh.userData;
-          const pct = u.cpDeltaPct * 100;
-          const sign = pct >= 0 ? "+" : "";
-          const klass = u.regression ? "down" : "";
-          const label = u.regression ? "regression" : "improvement";
-          return `
-            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);">
-              <div class="meta">${u.series_name}</div>
-              <div class="meta">${label} · ${u.direction || ""}</div>
-              <div class="big ${klass}">${sign}${pct.toFixed(1)}%</div>
-              <div class="meta">${fmtNum(u.cpBefore)} → ${fmtNum(u.cpAfter)} ${u.unit || ""}</div>
-            </div>`;
-        }).join("");
-        body = `
-          <div class="meta" style="margin-top: 10px;">${count} change point${count>1?"s":""} on this commit</div>
-          ${items}
-        `;
-      } else {
-        let deltaBlock = "";
-        if (p.isChangePoint) {
-          const pct = p.cpDeltaPct * 100;
-          const sign = pct >= 0 ? "+" : "";
-          const label = p.regression ? "regression" : "improvement";
-          const klass = p.regression ? "down" : "";
-          deltaBlock = `
-            <div class="delta">
-              <div class="meta">${label} · ${p.direction || ""}</div>
-              <div class="big ${klass}">${sign}${pct.toFixed(1)}%</div>
-              <div class="meta">${fmtNum(p.cpBefore)} → ${fmtNum(p.cpAfter)} ${p.unit || ""}</div>
-            </div>`;
-        }
-        const glyph = KIND_GLYPH[p.kind] || "●";
-        body = `
-          <div class="meta" style="color:#fff">${escHtml(p.series_name)}</div>
-          <div class="meta"><span style="color:#fff">${glyph} ${escHtml(p.kind || "")}</span></div>
-          <div class="meta">value: <span style="color:#fff">${fmtNum(p.value)} ${escHtml(p.unit || "")}</span></div>
-          ${deltaBlock}
-        `;
-      }
-      panelBody.innerHTML = header + body;
+        : `<span class="subject">${escHtml(subjectText)}</span>`;
+      panelBody.innerHTML = shaHtml + subjectHtml;
       panel.classList.add("open");
     }
 

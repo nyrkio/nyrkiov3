@@ -27,6 +27,13 @@ LOG = logging.getLogger("nyrkiov3.app")
 # secantus handles concurrency (or NYRKIO_MONGO_URI points at real MongoDB).
 _BACKFILL_GATE = threading.BoundedSemaphore(1)
 
+# Default pages of workflow history a public backfill walks. We're sampling
+# benchmark formats across GitHub, not mirroring every repo's full history —
+# a cap keeps any one repo from monopolising the single-writer gate. A
+# connect request may override via ``max_pages`` in the body; raise it when
+# you genuinely want a repo's whole timeline.
+_SAMPLE_PAGES = 2
+
 
 SESSION_COOKIE = "nyrkio_session"
 OAUTH_STATE_COOKIE = "nyrkio_oauth_state"
@@ -455,6 +462,7 @@ def build_app(app=None, recent_cp_days=14):
             summary = ingest_workflow_history(
                 client=client, store=app.store,
                 owner=owner, repo=repo, workflow_filename=workflow,
+                max_pages=payload.get("max_pages", _SAMPLE_PAGES),
             )
             unparsed = summary.get("unparsed", [])
             LOG.info("backfill %s/%s (%s): %d runs seen, %d inserted, %d "

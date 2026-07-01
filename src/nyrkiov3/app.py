@@ -1042,9 +1042,21 @@ def build_app(app=None, recent_cp_days=14):
     except Exception:
         pass
 
+    def _plain(v):
+        # extjson decodes JSON arrays/objects into purejson Collection/Document;
+        # pymongo can't encode a Collection, so flatten to plain list/dict before
+        # persisting (that was silently failing every insert).
+        if isinstance(v, Collection):
+            return [_plain(x) for x in v]
+        if isinstance(v, dict):
+            return {k: _plain(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [_plain(x) for x in v]
+        return v
+
     def _persist_perf_frame(frame):
         try:
-            perf_frames.insert_one(dict(frame))
+            perf_frames.insert_one(_plain(dict(frame)))
         except Exception as e:
             LOG.warning("perf frame persist failed: %s", e)
 
@@ -1067,10 +1079,14 @@ def build_app(app=None, recent_cp_days=14):
 
     @app.route("GET", "/api/v3/public/perf/mysql")
     def perf_mysql_latest(request: Request):
-        """Latest live MySQL perf frame for the UI feed (served from memory)."""
+        """Latest live MySQL perf frame for the UI feed (served from memory).
+        ``?ring=N`` also returns the last N in-memory frames (recent time-series,
+        e.g. for the Aurora surface demo) without touching the store."""
+        n = request["query"].get("ring")
         with _perf_lock:
             latest = _perf_ring[-1] if _perf_ring else None
-        return Document(latest=latest, ring=len(_perf_ring))
+            frames = list(_perf_ring)[-int(n):] if (n and n.isdigit()) else []
+        return Document(latest=latest, ring=len(_perf_ring), frames=Collection(frames))
 
     @app.route("GET", "/api/v3/public/perf/mysql/history")
     def perf_mysql_history(request: Request):

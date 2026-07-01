@@ -11,3 +11,4 @@ nyrkiov3.yml
 nyrkiov3-secrets.yml
 # Editor swap files.
 *.swp
+serve.log

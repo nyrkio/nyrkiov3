@@ -6,6 +6,7 @@ import datetime
 import logging
 import os
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 from purejson import Document, Collection
@@ -1025,5 +1026,70 @@ def build_app(app=None, recent_cp_days=14):
             timestamp_span=span,
             commit_times=sorted(commit_ts_set),
         )
+
+    # --- live perf monitor: MySQL performance_schema frames --------------
+    # A collector (reads performance_schema, maps it to per-component load)
+    # POSTs frames here ~1/sec; the 3D "top"/house UI GETs the latest,
+    # same-origin. LATEST is served from a small in-memory ring (fast, no store
+    # contention on the hot path); every frame is ALSO persisted to the
+    # `perf_frames` collection off the request thread, so the timeline can be
+    # browsed and replayed later.
+    _perf_ring = deque(maxlen=300)
+    _perf_lock = threading.Lock()
+    perf_frames = app.store.collection("perf_frames")
+    try:
+        perf_frames.create_index({"t": 1})
+    except Exception:
+        pass
+
+    def _persist_perf_frame(frame):
+        try:
+            perf_frames.insert_one(dict(frame))
+        except Exception as e:
+            LOG.warning("perf frame persist failed: %s", e)
+
+    @app.route("POST", "/api/v3/public/perf/mysql")
+    def perf_mysql_ingest(request: Request):
+        """Ingest one live MySQL perf frame from the collector. Public. Body is
+        a LoadProvider frame: ``{t, tick, dt, load:{node:0..1}, sessions,
+        active, mix, events}``. Latest is kept in memory for the live UI; the
+        frame is also persisted (off-thread) so it can be replayed/browsed."""
+        frame = request.get("body") or {}
+        frame.setdefault("received", utcnow())
+        with _perf_lock:
+            _perf_ring.append(frame)
+        bg = getattr(app, "background", None)
+        if bg is not None and hasattr(bg, "submit"):
+            bg.submit(_persist_perf_frame, frame)
+        else:
+            _persist_perf_frame(frame)
+        return Document(ok=True, ring=len(_perf_ring))
+
+    @app.route("GET", "/api/v3/public/perf/mysql")
+    def perf_mysql_latest(request: Request):
+        """Latest live MySQL perf frame for the UI feed (served from memory)."""
+        with _perf_lock:
+            latest = _perf_ring[-1] if _perf_ring else None
+        return Document(latest=latest, ring=len(_perf_ring))
+
+    @app.route("GET", "/api/v3/public/perf/mysql/history")
+    def perf_mysql_history(request: Request):
+        """Browse/replay persisted frames, oldest->newest. ``?limit=N``
+        (default 600, max 5000); optional ``?since=<epoch seconds>`` lower
+        bound on the frame's ``t``."""
+        q = request["query"]
+        try:
+            limit = min(int(q.get("limit") or 600), 5000)
+        except ValueError:
+            limit = 600
+        filt = {}
+        since = q.get("since")
+        if since:
+            try:
+                filt["t"] = {"$gte": float(since)}
+            except ValueError:
+                pass
+        hits = list(perf_frames.find(filt, sort={"t": 1}, limit=limit))
+        return Document(frames=Collection(hits), count=len(hits))
 
     return app

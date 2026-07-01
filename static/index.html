@@ -1234,6 +1234,56 @@
       }
     }
 
+    // ---- benchmark-specific data shaping (moved OUT of Aurora) ----------
+    // Aurora is now a generic timeseries surface: it plots whatever X value
+    // and hover-card we hand it per point. The two benchmark/git specifics
+    // live here:
+    //   1. the commit-ORDINAL X — dedup + sort commit times, assign an
+    //      integer index per commit (Aurora then linearly scales that range
+    //      to the axis, so equal commits stay evenly spaced);
+    //   2. the git hover CARD — sha / subject / author·date·ref·repo, the
+    //      exact fields Aurora used to format itself.
+    function commitCardDate(c) {
+      return (c && typeof c.commit_time === "number")
+        ? new Date(c.commit_time * 1000).toISOString().slice(0, 10) : "";
+    }
+    function buildCommitCard(c) {
+      c = c || {};
+      const mono = c.short_sha || (c.sha || "").slice(0, 7) || "—";
+      const title = c.message || "(no message)";
+      const meta = [c.author, commitCardDate(c), c.ref, c.repo]
+        .filter(Boolean).join("   ·   ");
+      return { mono, title, meta };
+    }
+    function prepareRuns(rawRuns) {
+      if (!Array.isArray(rawRuns)) return rawRuns;
+      // Ordinal basis: the fixed global commit list from facets when
+      // available (so X aligns with the slider + SHA strip, which are
+      // commit-ordinal indexed), else this batch's own distinct commits.
+      let basis = _commitTimes;
+      if (!basis || basis.length === 0) {
+        basis = [...new Set(rawRuns
+          .map(r => typeof (r.commit || {}).commit_time === "number"
+               ? r.commit.commit_time * 1000 : null)
+          .filter(t => t !== null))].sort((a, b) => a - b);
+      }
+      const ordinalByMs = new Map(basis.map((t, i) => [t, i]));
+      let extra = basis.length;
+      return rawRuns.map(r => {
+        const c = r.commit || {};
+        const ms = typeof c.commit_time === "number" ? c.commit_time * 1000 : null;
+        let x = ms !== null ? ordinalByMs.get(ms) : undefined;
+        if (x === undefined) {
+          // Commit not in the basis (shouldn't normally happen) — give it a
+          // stable trailing ordinal so it still plots.
+          x = extra++;
+          if (ms !== null) ordinalByMs.set(ms, x);
+        }
+        return Object.assign({}, r,
+          { x, time: ms === null ? undefined : ms, card: buildCommitCard(c) });
+      });
+    }
+
     async function fetchAndRender(url) {
       // get config first
       var c = { recent_cp_days: 14 }; // default
@@ -1253,7 +1303,8 @@
       const payload = await res.json();
       // Unwrap JsonEE envelope if present; fall back to plain JSON.
       var d = payload?.data ?? payload;
-      k.setData( d );
+      // Attach the commit-ordinal X + git hover card, then hand to Aurora.
+      k.setData( prepareRuns(d) );
       return d;
     }
 
@@ -1412,10 +1463,9 @@
             const title = [m.sha, m.author, m.message].filter(Boolean).join(" · ");
             const tick = document.createElement("div");
             tick.className = "tick";
-            // Pass the commit timestamp (ms), not the index. Aurora's
-            // internal index space shifts whenever the rendered window
-            // changes; the timestamp is stable across reloads.
-            tick.dataset.ts = String(commitTimes[i]);
+            // `i` is the global commit ordinal — the same X Aurora plots
+            // and keys its columns by, stable across windowed reloads.
+            tick.dataset.x = String(i);
             tick.title = title;
             const cpSpan = document.createElement("span");
             cpSpan.className = "cp-count";
@@ -1548,20 +1598,12 @@
             seenShasMeta.add(sha7);
             metaMap.set(t, { sha: sha7, author: c.author || "", message: c.message || c.subject || "" });
           }
-          // Map windowed CP indices → global commitTimes indices.
-          const windowedTimes = [...new Set(
-            (k._lastRuns || [])
-              .map(r => typeof (r.commit || {}).commit_time === "number"
-                   ? r.commit.commit_time * 1000 : null)
-              .filter(t => t !== null)
-          )].sort((a, b) => a - b);
-          const tsToGlobalIdx = new Map(commitTimes.map((t, i) => [t, i]));
+          // Aurora keys its change points by X = the global commit ordinal,
+          // so they map straight onto the SHA strip's indices — no remap.
           cpByGlobal = new Map();
           for (const cp of (k._changePoints || [])) {
-            const ts = windowedTimes[cp.idx];
-            if (ts === undefined) continue;
-            const gi = tsToGlobalIdx.get(ts);
-            if (gi === undefined) continue;
+            const gi = cp.idx;
+            if (typeof gi !== "number") continue;
             cpByGlobal.set(gi, (cpByGlobal.get(gi) || 0) + 1);
           }
           buildShaTicks();
@@ -1600,7 +1642,11 @@
             refreshTickMeta();
           }
 
-          k.setPrimaryWindow(sinceMs, untilMs);
+          // Aurora's window is in commit-ordinal X (the same coordinate the
+          // slider handles use), so pass the ordinals directly. Null at an
+          // extreme preserves the prior behaviour (unset → Aurora default).
+          k.setWindow(_sinceIdx > 0 ? _sinceIdx : null,
+                      _untilIdx < n - 1 ? _untilIdx : null);
           updateFill();
           buildDatesAbove();
         };
@@ -1613,11 +1659,11 @@
         timeFilterEl.addEventListener("mouseleave", () => k.clearHover());
         shaTicksEl.addEventListener("mouseover", (e) => {
           const tick = e.target.closest(".tick");
-          if (tick) k.hoverCommitByTs(+tick.dataset.ts);
+          if (tick) k.hoverByX(+tick.dataset.x);
         });
         shaTicksEl.addEventListener("click", (e) => {
           const tick = e.target.closest(".tick");
-          if (tick) k.lockCommitByTs(+tick.dataset.ts);
+          if (tick) k.lockByX(+tick.dataset.x);
         });
 
         // Apply the default window without re-fetching — data already loaded.
